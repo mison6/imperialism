@@ -5,18 +5,14 @@ import random
 import json
 import os
 from urllib.request import urlopen, Request
-import plotly.express as px
+import plotly.graph_objects as go
 from scipy.spatial import KDTree
 
 # --- CONFIG & SETUP ---
 st.set_page_config(page_title="Madden Imperialism Engine", layout="wide")
 
 # --- DATA SOURCE CONSTANTS ---
-# 1. GeoJSON for drawing the county lines (Plotly's standard dataset)
 COUNTY_GEOJSON_URL = "https://raw.githubusercontent.com/plotly/datasets/master/geojson-counties-fips.json"
-
-# 2. Centroids for calculating ownership (Official US Census 2020 Data)
-# This is a .txt file but formatted as CSV. It is the authoritative source.
 CENSUS_CENTER_URL = "https://www2.census.gov/geo/docs/reference/cenpop2020/county/CenPop2020_Mean_CO.txt"
 
 # --- STATE MANAGEMENT ---
@@ -27,17 +23,27 @@ if 'teams' not in st.session_state:
 if 'county_assignments' not in st.session_state:
     st.session_state.county_assignments = {}
 
-# --- DATA FETCHING & PROCESSING ---
+# --- DATA FETCHING & OPTIMIZATION ---
 @st.cache_data
 def load_map_resources():
     """
-    Fetches map data from authoritative sources to avoid 404s.
+    Fetches and optimizes map data for high-speed rendering.
     """
-    # 1. Load GeoJSON
+    # 1. Load and Optimize GeoJSON
     try:
         req = Request(COUNTY_GEOJSON_URL, headers={'User-Agent': 'Mozilla/5.0'})
         with urlopen(req) as response:
             geojson = json.load(response)
+
+        # Optimization: Reduce coordinate precision to 3 decimal places
+        # This drastically reduces the JSON size sent to the client.
+        for feature in geojson['features']:
+            geom = feature['geometry']
+            if geom['type'] == 'Polygon':
+                geom['coordinates'] = [[[round(c, 3) for c in coord] for coord in ring] for ring in geom['coordinates']]
+            elif geom['type'] == 'MultiPolygon':
+                geom['coordinates'] = [[[[round(c, 3) for c in coord] for coord in ring] for ring in poly] for poly in geom['coordinates']]
+
     except Exception as e:
         st.error(f"Error loading GeoJSON: {e}")
         return None, None
@@ -50,217 +56,125 @@ def load_map_resources():
         df['fips'] = df['STATEFP'] + df['COUNTYFP']
         df = df.rename(columns={'LATITUDE': 'lat', 'LONGITUDE': 'lon', 'COUNAME': 'name'})
         return geojson, df[['fips', 'name', 'lat', 'lon']].dropna()
-
     except Exception as e:
         st.error(f"Error loading Census Data: {e}")
         return None, None
 
 def get_team_color(index):
-    colors = [
-        "#E31837", "#002244", "#0B2265", "#0076B6", "#A71930",
-        "#241773", "#0085CA", "#FB4F14", "#FFB612", "#101820"
-    ]
+    colors = ["#E31837", "#002244", "#0B2265", "#0076B6", "#A71930", "#241773", "#0085CA", "#FB4F14", "#FFB612", "#101820"]
     return colors[index % len(colors)]
 
 def process_teams_df(df):
-    """Helper to process a dataframe into the teams list format."""
     processed = []
-    # Standardize column names
     df.columns = [c.lower() for c in df.columns]
-
-    # Check for required columns
     if all(col in df.columns for col in ['team', 'latitude', 'longitude']):
         for i, row in df.iterrows():
             color = row['color'] if 'color' in row else get_team_color(i)
-            processed.append({
-                "name": row['team'],
-                "lat": float(row['latitude']),
-                "lon": float(row['longitude']),
-                "color": color,
-                "active": True
-            })
+            processed.append({"name": row['team'], "lat": float(row['latitude']), "lon": float(row['longitude']), "color": color, "active": True})
     return processed
 
-# --- GAME LOGIC ---
 def assign_initial_territories(teams, counties_df):
     team_coords = np.array([[t['lat'], t['lon']] for t in teams])
     county_coords = counties_df[['lat', 'lon']].values
     tree = KDTree(team_coords)
     _, indices = tree.query(county_coords)
-    assignments = {counties_df.iloc[i]['fips']: teams[team_idx]['name'] for i, team_idx in enumerate(indices)}
-    return assignments
+    return {counties_df.iloc[i]['fips']: teams[team_idx]['name'] for i, team_idx in enumerate(indices)}
 
 # --- UI ---
-st.title("🏟️ Madden Imperialism: The Professional Engine")
-st.markdown("Replicating the viral map style using official US Census data.")
+st.title("🏟️ Madden Imperialism: Optimized Engine")
 
 with st.sidebar:
     st.header("1. Roster Setup")
-
-    # Input Method Selection - Default is now "Default NFL"
     input_method = st.radio("Input Method", ["Default NFL", "Upload CSV", "Manual Entry"])
-
     processed_teams = []
 
     if input_method == "Default NFL":
-        # Look for the file in priority order
-        possible_paths = ["inputs/nfl.csv"]
-        found_path = None
-        for p in possible_paths:
-            if os.path.exists(p):
-                found_path = p
-                break
-
+        found_path = next((p for p in ["inputs/nfl.csv", "nfl_teams.csv", "nfl.csv"] if os.path.exists(p)), None)
         if found_path:
-            try:
-                df_default = pd.read_csv(found_path)
-                processed_teams = process_teams_df(df_default)
-                if processed_teams:
-                    st.success(f"Loaded {len(processed_teams)} teams from {found_path}!")
-                else:
-                    st.error("Default file found but columns missing.")
-            except Exception as e:
-                st.error(f"Error reading default file: {e}")
+            processed_teams = process_teams_df(pd.read_csv(found_path))
+            st.success(f"Default data loaded!")
         else:
-            st.warning("Default file (inputs/nfl.csv or nfl_teams.csv) not found. Please upload a CSV.")
-
+            st.warning("Default file not found.")
     elif input_method == "Upload CSV":
-        uploaded_file = st.file_uploader("Upload Teams CSV", type=["csv"], help="Columns required: Team, Latitude, Longitude. Optional: Color")
-        if uploaded_file is not None:
-            try:
-                df_upload = pd.read_csv(uploaded_file)
-                processed_teams = process_teams_df(df_upload)
-                if processed_teams:
-                    st.success(f"Loaded {len(processed_teams)} teams from CSV!")
-                else:
-                    st.error("CSV must contain columns: 'Team', 'Latitude', 'Longitude'")
-            except Exception as e:
-                st.error(f"Error parsing CSV: {e}")
-
+        uploaded_file = st.file_uploader("Upload Teams CSV", type=["csv"])
+        if uploaded_file:
+            processed_teams = process_teams_df(pd.read_csv(uploaded_file))
     else:
-        st.info("Input Format: Team Name, Latitude, Longitude")
-        default_teams = (
-            "Chicago Bears, 41.8623, -87.6167\n"
-            "Green Bay Packers, 44.5013, -88.0622\n"
-            "Detroit Lions, 42.3400, -83.0456\n"
-            "Minnesota Vikings, 44.9735, -93.2575\n"
-            "Kansas City Chiefs, 39.0489, -94.4839\n"
-            "Dallas Cowboys, 32.7473, -97.0945"
-        )
-        team_input = st.text_area("Enter Teams", default_teams, height=200)
-
+        team_input = st.text_area("Enter Teams (Name, Lat, Lon)", "Chicago Bears, 41.8623, -87.6167", height=200)
         for i, line in enumerate(team_input.split('\n')):
             if ',' in line:
-                parts = [p.strip() for p in line.split(',')]
-                if len(parts) >= 3:
-                    processed_teams.append({
-                        "name": parts[0],
-                        "lat": float(parts[1]),
-                        "lon": float(parts[2]),
-                        "color": get_team_color(i),
-                        "active": True
-                    })
+                p = [x.strip() for x in line.split(',')]
+                processed_teams.append({"name": p[0], "lat": float(p[1]), "lon": float(p[2]), "color": get_team_color(i), "active": True})
 
-    if st.button("Generate Imperialism Map"):
-        with st.spinner("Fetching Census data & Calculating territories..."):
+    if st.button("Generate Map"):
+        with st.spinner("Processing..."):
             geojson, counties_df = load_map_resources()
-
-            if geojson and not counties_df.empty:
-                if processed_teams:
-                    st.session_state.teams = processed_teams
-                    st.session_state.county_assignments = assign_initial_territories(processed_teams, counties_df)
-                    st.session_state.game_active = True
-                    st.rerun()
-                else:
-                    st.warning("No valid teams found. Please check your input.")
-            else:
-                st.error("Failed to load map resources. Please check connection.")
+            if geojson and processed_teams:
+                st.session_state.teams = processed_teams
+                st.session_state.county_assignments = assign_initial_territories(processed_teams, counties_df)
+                st.session_state.game_active = True
+                st.rerun()
 
 if st.session_state.game_active:
-    geojson, counties_df = load_map_resources()
+    geojson, _ = load_map_resources()
     active_teams = [t for t in st.session_state.teams if t['active']]
 
     col_map, col_ctrl = st.columns([3, 1])
 
     with col_ctrl:
         st.subheader("War Room")
-        st.metric("Active Empires", len(active_teams))
-
         if st.button("🔥 Simulate Battle", use_container_width=True):
             if len(active_teams) > 1:
-                # 1. Pick Attacker
-                attacker = random.choice(active_teams)
-
-                # 2. Pick Defender (Simplified Logic: Pick random other active team)
-                potential_defenders = [t for t in active_teams if t['name'] != attacker['name']]
-                if potential_defenders:
-                    defender = random.choice(potential_defenders)
-                    st.session_state.current_battle = {"att": attacker['name'], "def": defender['name']}
+                att = random.choice(active_teams)
+                dfn = random.choice([t for t in active_teams if t['name'] != att['name']])
+                st.session_state.current_battle = {"att": att['name'], "def": dfn['name']}
 
         if 'current_battle' in st.session_state:
-            battle = st.session_state.current_battle
-            st.divider()
-            st.markdown(f"### ⚔️ {battle['att']} vs {battle['def']}")
-
-            winner = st.radio("Battle Outcome:", [battle['att'], battle['def']])
-
+            b = st.session_state.current_battle
+            winner = st.radio(f"Winner of {b['att']} vs {b['def']}:", [b['att'], b['def']])
             if st.button("Confirm Conquest"):
-                loser_name = battle['def'] if winner == battle['att'] else battle['att']
-                winner_name = winner
-
-                # Update Map: Winner takes ALL of Loser's land
-                new_map = st.session_state.county_assignments.copy()
-                conquered_count = 0
-                for fips, owner in new_map.items():
-                    if owner == loser_name:
-                        new_map[fips] = winner_name
-                        conquered_count += 1
-                st.session_state.county_assignments = new_map
-
-                # Deactivate Loser
+                loser = b['def'] if winner == b['att'] else b['att']
+                st.session_state.county_assignments = {f: (winner if o == loser else o) for f, o in st.session_state.county_assignments.items()}
                 for t in st.session_state.teams:
-                    if t['name'] == loser_name:
-                        t['active'] = False
-
-                st.toast(f"{winner_name} annexed {conquered_count} counties from {loser_name}!")
+                    if t['name'] == loser: t['active'] = False
                 del st.session_state.current_battle
                 st.rerun()
 
     with col_map:
-        plot_df = pd.DataFrame(list(st.session_state.county_assignments.items()), columns=['fips', 'Team'])
-        color_map = {t['name']: t['color'] for t in st.session_state.teams}
+        # Optimization: Map names to IDs for categorical plotting
+        team_to_id = {t['name']: i for i, t in enumerate(st.session_state.teams)}
+        fips_list = list(st.session_state.county_assignments.keys())
+        owners_list = list(st.session_state.county_assignments.values())
 
-        fig = px.choropleth(
-            plot_df,
+        # Build the Figure using Graph Objects (faster than PX for large GeoJSON)
+        fig = go.Figure(go.Choropleth(
             geojson=geojson,
-            locations='fips',
-            color='Team',
-            color_discrete_map=color_map,
-            scope="usa",
-            title="Territorial Control",
-            hover_data={'fips': False, 'Team': True}
-        )
+            locations=fips_list,
+            z=[team_to_id[name] for name in owners_list],
+            colorscale=[[i/(len(st.session_state.teams)-1), t['color']] for i, t in enumerate(st.session_state.teams)],
+            showscale=False,
+            marker_line_width=0, # Remove lines for speed
+            hovertext=owners_list,
+            hoverinfo="text"
+        ))
+
+        # Add a custom legend using invisible traces
+        for t in st.session_state.teams:
+            if t['active']:
+                fig.add_trace(go.Scattergeo(
+                    lat=[None], lon=[None],
+                    mode='markers',
+                    marker=dict(size=10, color=t['color']),
+                    legendgroup=t['name'],
+                    name=t['name'],
+                    showlegend=True
+                ))
 
         fig.update_layout(
-            margin={"r":0,"t":30,"l":0,"b":50}, # Added bottom margin for legend space
-            height=650,
-            dragmode=False,
-            showlegend=True,
-            # Legend moved below the map
-            legend=dict(
-                orientation="h",
-                yanchor="top",
-                y=-0.05,
-                xanchor="center",
-                x=0.5
-            ),
-            geo=dict(
-                lakecolor='lightblue',
-                projection_type='albers usa'
-            )
+            margin={"r":0,"t":0,"l":0,"b":0},
+            height=600,
+            geo=dict(scope='usa', projection_type='albers usa', showlakes=True, lakecolor='rgb(255, 255, 255)'),
+            legend=dict(orientation="h", yanchor="top", y=-0.05, xanchor="center", x=0.5)
         )
-        fig.update_traces(marker_line_width=0.1, marker_line_color='white')
-        st.plotly_chart(fig, use_container_width=True)
 
-else:
-    st.info("👈 Upload the provided NFL CSV or enter teams manually to generate the map.")
+        st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
