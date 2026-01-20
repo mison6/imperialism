@@ -292,16 +292,25 @@ if st.session_state.game_active:
         st.subheader("⚔️ Actions")
 
         # --- REPLAY LOGIC ---
-        if st.button("⏪ Play All Replays", disabled=st.session_state.is_replaying) or st.session_state.trigger_replay:
+        if st.button("⏪ Replay All Battles", disabled=st.session_state.is_replaying) or st.session_state.trigger_replay:
             st.session_state.trigger_replay = False
             st.session_state.is_replaying = True
             cur_map = assign_initial_territories(st.session_state.teams, counties_df)
+
+            final_header = st.session_state.last_header_content
 
             for i, battle in enumerate(st.session_state.battle_log):
                 att, dfn, win = battle['att'], battle['def'], battle['winner']
                 loser = dfn if win == att else att
 
-                header_placeholder.markdown(f"<div class='header-container'>{format_battle_header(att, dfn, win, label=f'REPLAY {i+1}')}</div>", unsafe_allow_html=True)
+                # Format current battle header
+                current_header = format_battle_header(att, dfn, win, label=f'BATTLE {i+1}')
+                header_placeholder.markdown(f"<div class='header-container'>{current_header}</div>", unsafe_allow_html=True)
+
+                # If this is the last battle in the log, save it as the persistent header
+                if i == len(st.session_state.battle_log) - 1:
+                    final_header = current_header
+
                 map_placeholder.plotly_chart(render_map(geojson, cur_map, st.session_state.teams, [att, dfn]), use_container_width=True, key=f"replay_h_{i}")
                 time.sleep(1.2)
 
@@ -310,13 +319,14 @@ if st.session_state.game_active:
                 time.sleep(0.8)
 
             st.session_state.county_assignments = cur_map
+            st.session_state.last_header_content = final_header
             st.session_state.is_replaying = False
             st.rerun()
 
         st.divider()
 
         # --- TWO-STAGE SPIN LOGIC ---
-        if st.button("🎰 SPIN FOR BATTLE", use_container_width=True, type="primary", disabled=st.session_state.is_replaying):
+        if st.button("🎰 SPIN FOR NEXT BATTLE", use_container_width=True, type="primary", disabled=st.session_state.is_replaying):
             viable_attackers = [t for t in active_teams if get_neighbors(t['name'])]
 
             if viable_attackers:
