@@ -26,16 +26,23 @@ if 'county_assignments' not in st.session_state:
     st.session_state.county_assignments = {}
 if 'adjacencies' not in st.session_state:
     st.session_state.adjacencies = {}
+if 'battle_log' not in st.session_state:
+    st.session_state.battle_log = []
+if 'is_replaying' not in st.session_state:
+    st.session_state.is_replaying = False
+if 'trigger_replay' not in st.session_state:
+    st.session_state.trigger_replay = False
+if 'last_loaded_file_id' not in st.session_state:
+    st.session_state.last_loaded_file_id = None
 
-# --- DATA FETCHING & ADJACENCY LOGIC ---
+# --- DATA FETCHING & LOGIC ---
 @st.cache_data
 def load_map_resources():
-    # 1. Load GeoJSON
     try:
         req = Request(COUNTY_GEOJSON_URL, headers={'User-Agent': 'Mozilla/5.0'})
         with urlopen(req) as response:
             geojson = json.load(response)
-        # Optimization: Coordinate precision
+        # Simplify geometry for performance
         for feature in geojson['features']:
             geom = feature['geometry']
             if geom['type'] == 'Polygon':
@@ -44,14 +51,12 @@ def load_map_resources():
                 geom['coordinates'] = [[[[round(c, 3) for c in coord] for coord in ring] for ring in poly] for poly in geom['coordinates']]
     except: return None, None, None
 
-    # 2. Load Census Centers
     try:
         df = pd.read_csv(CENSUS_CENTER_URL, dtype={'STATEFP': str, 'COUNTYFP': str})
         df['fips'] = df['STATEFP'].str.zfill(2) + df['COUNTYFP'].str.zfill(3)
         counties_df = df[['fips', 'COUNAME', 'LATITUDE', 'LONGITUDE']].rename(columns={'LATITUDE':'lat', 'LONGITUDE':'lon', 'COUNAME':'name'})
     except: return None, None, None
 
-    # 3. Load Adjacency Data
     adj_dict = {}
     try:
         response = urlopen(ADJACENCY_URL)
@@ -76,10 +81,9 @@ def get_team_color(index):
 def process_teams_df(df):
     processed = []
     df.columns = [c.lower() for c in df.columns]
-    if all(col in df.columns for col in ['team', 'latitude', 'longitude']):
-        for i, row in df.iterrows():
-            color = row['color'] if 'color' in row else get_team_color(i)
-            processed.append({"name": row['team'], "lat": float(row['latitude']), "lon": float(row['longitude']), "color": color, "active": True})
+    for i, row in df.iterrows():
+        color = row['color'] if 'color' in row else get_team_color(i)
+        processed.append({"name": row['team'], "lat": float(row['latitude']), "lon": float(row['longitude']), "color": color, "active": True})
     return processed
 
 def assign_initial_territories(teams, counties_df):
@@ -100,129 +104,170 @@ def get_neighbors(team_name):
                     neighbors.add(neighbor_owner)
     return list(neighbors)
 
+def render_map(geojson, county_assignments, teams_list):
+    team_to_id = {t['name']: i for i, t in enumerate(teams_list)}
+    fips_list = list(county_assignments.keys())
+    owners_list = list(county_assignments.values())
+    z_vals = [team_to_id[name] for name in owners_list]
+
+    fig = go.Figure(go.Choropleth(
+        geojson=geojson,
+        locations=fips_list,
+        z=z_vals,
+        colorscale=[[i/(max(1, len(teams_list)-1)), t['color']] for i, t in enumerate(teams_list)],
+        showscale=False,
+        marker_line_width=0,
+        text=owners_list,
+        hoverinfo="text",
+        hovertemplate="<b>Owner:</b> %{text}<extra></extra>"
+    ))
+    fig.update_layout(
+        margin={"r":0,"t":0,"l":0,"b":0},
+        height=650,
+        geo=dict(scope='usa', projection_type='albers usa', showlakes=True, lakecolor='rgb(255, 255, 255)')
+    )
+    return fig
+
 # --- UI ---
-st.title("🏟️ Madden Imperialism: Neighbor Battle Engine")
+st.title("🏟️ Madden Imperialism Engine")
 
 with st.sidebar:
-    st.header("1. Roster Setup")
-    input_method = st.radio("Input Method", ["Default NFL", "Upload CSV", "Manual Entry"])
+    st.header("🎮 Game Control")
+    mode = st.radio("Select Action", ["New Game", "Load Session"])
 
-    processed_teams = []
-
-    if input_method == "Default NFL":
-        found_path = next((p for p in ["inputs/nfl.csv", "nfl_teams.csv", "nfl.csv"] if os.path.exists(p)), None)
-        if found_path:
-            processed_teams = process_teams_df(pd.read_csv(found_path))
-            st.success(f"Default NFL data loaded!")
-        else:
-            st.warning("No default CSV found. Please use Upload or Manual.")
-
-    elif input_method == "Upload CSV":
-        uploaded_file = st.file_uploader("Upload Teams CSV", type=["csv"])
-        if uploaded_file:
-            processed_teams = process_teams_df(pd.read_csv(uploaded_file))
-
-    else:
-        team_input = st.text_area("Enter Teams (Name, Lat, Lon)", "Chicago Bears, 41.8, -87.6", height=200)
-        for i, line in enumerate(team_input.split('\n')):
-            if ',' in line:
-                p = [x.strip() for x in line.split(',')]
-                processed_teams.append({"name": p[0], "lat": float(p[1]), "lon": float(p[2]), "color": get_team_color(i), "active": True})
-
-    if st.button("Generate Map"):
-        with st.spinner("Analyzing borders..."):
-            geojson, counties_df, adj_dict = load_map_resources()
-            if geojson and processed_teams:
-                st.session_state.teams = processed_teams
+    if mode == "New Game":
+        input_type = st.radio("Team Source", ["Default NFL", "Manual Entry"])
+        if st.button("🚀 Start Engine"):
+            with st.spinner("Analyzing borders..."):
+                geojson, counties_df, adj_dict = load_map_resources()
+                if input_type == "Default NFL":
+                    path = next((p for p in ["nfl.csv", "inputs/nfl.csv"] if os.path.exists(p)), None)
+                    if path:
+                        st.session_state.teams = process_teams_df(pd.read_csv(path))
+                    else:
+                        st.error("nfl.csv not found.")
                 st.session_state.adjacencies = adj_dict
-                st.session_state.county_assignments = assign_initial_territories(processed_teams, counties_df)
+                st.session_state.county_assignments = assign_initial_territories(st.session_state.teams, counties_df)
+                st.session_state.battle_log = []
                 st.session_state.game_active = True
+                st.session_state.last_loaded_file_id = None
                 st.rerun()
 
+    else:
+        uploaded_file = st.file_uploader("📂 Load JSON Save", type=["json"])
+        if uploaded_file:
+            # Check if this is a new file we haven't replayed yet
+            current_file_id = uploaded_file.name + str(uploaded_file.size)
+
+            if st.session_state.last_loaded_file_id != current_file_id:
+                data = json.load(uploaded_file)
+                st.session_state.teams = data["teams"]
+                st.session_state.county_assignments = data["counties"]
+                st.session_state.battle_log = data["history"]
+                st.session_state.game_active = True
+                st.session_state.trigger_replay = True
+                st.session_state.last_loaded_file_id = current_file_id
+                st.success("Save Loaded! Starting replay...")
+
+    if st.session_state.game_active:
+        st.divider()
+        save_data = {
+            "teams": st.session_state.teams,
+            "counties": st.session_state.county_assignments,
+            "history": st.session_state.battle_log
+        }
+        st.download_button("💾 Save Progress", data=json.dumps(save_data), file_name="madden_empire_save.json", mime="application/json")
+
 if st.session_state.game_active:
-    geojson, _ , _ = load_map_resources()
+    geojson, counties_df, _ = load_map_resources()
     active_teams = [t for t in st.session_state.teams if t['active']]
 
     col_map, col_ctrl = st.columns([2, 1])
 
+    with col_map:
+        map_placeholder = st.empty()
+        if not st.session_state.is_replaying:
+            map_placeholder.plotly_chart(render_map(geojson, st.session_state.county_assignments, st.session_state.teams), use_container_width=True)
+
     with col_ctrl:
-        st.subheader("🎡 The Battle Wheel")
+        st.subheader("🛠️ Battle Management")
+        replay_speed = st.slider("Animation Speed", 0.5, 5.0, 1.0)
 
-        if st.button("🎰 SPIN FOR BATTLE", use_container_width=True):
-            # Phase 1: Attacker Spinner
-            placeholder = st.empty()
-            attacker = None
+        # Trigger Replay logic
+        if (st.button("⏪ Watch History") or st.session_state.trigger_replay) and st.session_state.battle_log:
+            st.session_state.trigger_replay = False
+            st.session_state.is_replaying = True
 
-            for _ in range(12):
-                temp_team = random.choice(active_teams)
-                placeholder.markdown(f"<h2 style='text-align:center;'>🌀 Picking Attacker...</h2><h1 style='text-align:center; color:{temp_team['color']};'>{temp_team['name']}</h1>", unsafe_allow_html=True)
-                time.sleep(0.08)
+            # 1. Reset actual session state to Day 0
+            st.session_state.county_assignments = assign_initial_territories(st.session_state.teams, counties_df)
+            for t in st.session_state.teams:
+                t['active'] = True
 
-            attacker = random.choice(active_teams)
-            attacker_name = attacker['name']
-            attacker_color = attacker['color']
+            replay_info = st.empty()
+            replay_info.info("🎬 Replaying History: Day 0")
+            map_placeholder.plotly_chart(render_map(geojson, st.session_state.county_assignments, st.session_state.teams), use_container_width=True)
+            time.sleep(1.5 / replay_speed)
 
-            # Show Attacker Result briefly
-            placeholder.markdown(f"<h2 style='text-align:center;'>⚔️ ATTACKER</h2><h1 style='text-align:center; color:{attacker_color};'>{attacker_name}</h1>", unsafe_allow_html=True)
-            time.sleep(1.0)
+            # 2. Sequential state progression
+            for i, battle in enumerate(st.session_state.battle_log):
+                att, dfn, win = battle['att'], battle['def'], battle['winner']
+                loser = dfn if win == att else att
 
-            # Phase 2: Direction / Target Spinner
-            neighbors = get_neighbors(attacker_name)
-            if neighbors:
-                for _ in range(12):
-                    temp_neighbor = random.choice(neighbors)
-                    placeholder.markdown(f"<h2 style='text-align:center;'>🏹 Hunting Target...</h2><h1 style='text-align:center;'>{temp_neighbor}</h1>", unsafe_allow_html=True)
-                    time.sleep(0.08)
+                replay_info.markdown(f"**Battle {i+1}:** {att} ⚔️ {dfn} ... **Winner: {win}!**")
 
-                target_name = random.choice(neighbors)
-                st.session_state.current_battle = {"att": attacker_name, "def": target_name}
-                placeholder.markdown(f"<h2 style='text-align:center;'>🎯 MATCHUP ACQUIRED</h2><h1 style='text-align:center; color:{attacker_color};'>{attacker_name}</h1><h3 style='text-align:center;'>VS</h3><h1 style='text-align:center;'>{target_name}</h1>", unsafe_allow_html=True)
-            else:
-                placeholder.error(f"{attacker_name} has no neighbors to attack!")
-
-        if 'current_battle' in st.session_state:
-            b = st.session_state.current_battle
-            st.divider()
-            st.markdown(f"### 🏟️ Matchup: **{b['att']}** vs **{b['def']}**")
-            winner = st.radio("Who won the game?", [b['att'], b['def']], horizontal=True)
-
-            if st.button("🏆 Record Result", use_container_width=True):
-                loser = b['def'] if winner == b['att'] else b['att']
-                st.session_state.county_assignments = {f: (winner if o == loser else o) for f, o in st.session_state.county_assignments.items()}
+                # Update actual session state
+                st.session_state.county_assignments = {f: (win if o == loser else o) for f, o in st.session_state.county_assignments.items()}
                 for t in st.session_state.teams:
                     if t['name'] == loser: t['active'] = False
 
+                map_placeholder.plotly_chart(render_map(geojson, st.session_state.county_assignments, st.session_state.teams), use_container_width=True)
+                time.sleep(1.0 / replay_speed)
+
+            st.session_state.is_replaying = False
+            replay_info.success("✅ Replay Complete! Final state persisted.")
+            time.sleep(1.0)
+            st.rerun() # Refresh to clear out UI artifacts and lock the final state
+
+        st.divider()
+        if st.button("🎰 SPIN FOR BATTLE", use_container_width=True, disabled=st.session_state.is_replaying):
+            placeholder = st.empty()
+            attacker = random.choice(active_teams)
+            for _ in range(8):
+                temp = random.choice(active_teams)
+                placeholder.markdown(f"<h2 style='text-align:center;'>🌀 Picking Attacker...</h2><h1 style='text-align:center; color:{temp['color']};'>{temp['name']}</h1>", unsafe_allow_html=True)
+                time.sleep(0.08)
+
+            placeholder.markdown(f"<h2 style='text-align:center;'>⚔️ ATTACKER</h2><h1 style='text-align:center; color:{attacker['color']};'>{attacker['name']}</h1>", unsafe_allow_html=True)
+            time.sleep(1.0)
+
+            neighbors = get_neighbors(attacker['name'])
+            if neighbors:
+                for _ in range(8):
+                    temp = random.choice(neighbors)
+                    placeholder.markdown(f"<h2 style='text-align:center;'>🏹 Hunting Target...</h2><h1 style='text-align:center;'>{temp}</h1>", unsafe_allow_html=True)
+                    time.sleep(0.08)
+
+                target = random.choice(neighbors)
+                st.session_state.current_battle = {"att": attacker['name'], "def": target}
+                placeholder.markdown(f"<h2 style='text-align:center;'>🎯 MATCHUP</h2><h1 style='text-align:center; color:{attacker['color']};'>{attacker['name']}</h1><h3 style='text-align:center;'>VS</h3><h1 style='text-align:center;'>{target}</h1>", unsafe_allow_html=True)
+            else:
+                placeholder.error(f"{attacker['name']} has no neighbors!")
+
+        if 'current_battle' in st.session_state:
+            b = st.session_state.current_battle
+            st.markdown(f"### Match: **{b['att']}** vs **{b['def']}**")
+            winner = st.radio("Select Winner", [b['att'], b['def']], horizontal=True)
+            if st.button("🏆 Record Win", use_container_width=True):
+                loser = b['def'] if winner == b['att'] else b['att']
+                st.session_state.battle_log.append({"att": b['att'], "def": b['def'], "winner": winner})
+                st.session_state.county_assignments = {f: (winner if o == loser else o) for f, o in st.session_state.county_assignments.items()}
+                for t in st.session_state.teams:
+                    if t['name'] == loser: t['active'] = False
                 del st.session_state.current_battle
-                st.balloons()
                 st.rerun()
 
     with col_map:
-        team_to_id = {t['name']: i for i, t in enumerate(st.session_state.teams)}
-        fips_list = list(st.session_state.county_assignments.keys())
-        owners_list = list(st.session_state.county_assignments.values())
-        z_vals = [team_to_id[name] for name in owners_list]
-
-        fig = go.Figure(go.Choropleth(
-            geojson=geojson,
-            locations=fips_list,
-            z=z_vals,
-            colorscale=[[i/(len(st.session_state.teams)-1), t['color']] for i, t in enumerate(st.session_state.teams)],
-            showscale=False,
-            marker_line_width=0,
-            text=owners_list,
-            hoverinfo="text"
-        ))
-        fig.update_layout(
-            margin={"r":0,"t":0,"l":0,"b":0},
-            height=600,
-            geo=dict(scope='usa', projection_type='albers usa', showlakes=True, lakecolor='rgb(255, 255, 255)')
-        )
-        st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
-
-        # Legend
-        st.write("### Active Teams")
-        legend_cols = st.columns(3)
+        st.write("### Active Empires")
+        legend_cols = st.columns(4)
         for i, t in enumerate(active_teams):
-            legend_cols[i % 3].markdown(f"<span style='color:{t['color']}; font-size: 20px;'>●</span> **{t['name']}**", unsafe_allow_html=True)
-
-# Unlocking potential once the sludge of friction is removed!
+            legend_cols[i % 4].markdown(f"<span style='color:{t['color']};'>●</span> {t['name']}", unsafe_allow_html=True)
