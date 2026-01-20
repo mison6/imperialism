@@ -192,12 +192,17 @@ def get_neighbors(team_name):
                     neighbors.add(neighbor_owner)
     return list(neighbors)
 
-def format_battle_header(att, dfn, winner=None, label="BATTLE", spinning=False):
+def format_battle_header(att, dfn, winner=None, label="BATTLE", spinning=False, spin_target="ALL"):
     att_c = next((t['color'] for t in st.session_state.teams if t['name'] == att), "#555")
     dfn_c = next((t['color'] for t in st.session_state.teams if t['name'] == dfn), "#555")
 
     if spinning:
-        status_html = "<div class='spinning-text'>🎰 SPINNING...</div>"
+        if spin_target == "ATTACKER":
+            status_html = "<div class='spinning-text'>🎰 SELECTING ATTACKER...</div>"
+        elif spin_target == "DEFENDER":
+            status_html = "<div class='spinning-text'>🎰 SELECTING DEFENDER...</div>"
+        else:
+            status_html = "<div class='spinning-text'>🎰 SPINNING...</div>"
     elif winner:
         status_html = f"<div class='winner-text'>WINNER: {winner}</div>"
     else:
@@ -310,25 +315,35 @@ if st.session_state.game_active:
 
         st.divider()
 
-        # --- SPIN LOGIC (THE ANTICIPATION) ---
-        if st.button("🎰 SPIN FOR TEAM", use_container_width=True, type="primary", disabled=st.session_state.is_replaying):
+        # --- TWO-STAGE SPIN LOGIC ---
+        if st.button("🎰 SPIN FOR BATTLE", use_container_width=True, type="primary", disabled=st.session_state.is_replaying):
             viable_attackers = [t for t in active_teams if get_neighbors(t['name'])]
 
             if viable_attackers:
-                # Slot Machine Animation Loop - Header ONLY to prevent map flicker
-                for i in range(20):
+                # Stage 1: Spin for Attacker
+                attacker_name = "?"
+                for i in range(15):
                     temp_att = random.choice(viable_attackers)
-                    temp_neighbors = get_neighbors(temp_att['name'])
-                    temp_dfn = random.choice(temp_neighbors)
-
-                    header_placeholder.markdown(f"<div class='header-container'>{format_battle_header(temp_att['name'], temp_dfn, spinning=True)}</div>", unsafe_allow_html=True)
+                    header_placeholder.markdown(f"<div class='header-container'>{format_battle_header(temp_att['name'], '?', spinning=True, spin_target='ATTACKER')}</div>", unsafe_allow_html=True)
                     time.sleep(0.08)
 
-                # Final Selection
-                attacker = random.choice(viable_attackers)
-                defender = random.choice(get_neighbors(attacker['name']))
-                st.session_state.current_battle = {"att": attacker['name'], "def": defender}
-                st.session_state.last_header_content = format_battle_header(attacker['name'], defender)
+                final_attacker = random.choice(viable_attackers)
+                attacker_name = final_attacker['name']
+
+                # Stage 2: Spin for Defender (from valid neighbors)
+                valid_neighbors = get_neighbors(attacker_name)
+                defender_name = "?"
+
+                for i in range(15):
+                    temp_dfn = random.choice(valid_neighbors)
+                    header_placeholder.markdown(f"<div class='header-container'>{format_battle_header(attacker_name, temp_dfn, spinning=True, spin_target='DEFENDER')}</div>", unsafe_allow_html=True)
+                    time.sleep(0.08)
+
+                final_defender = random.choice(valid_neighbors)
+                defender_name = final_defender
+
+                st.session_state.current_battle = {"att": attacker_name, "def": defender_name}
+                st.session_state.last_header_content = format_battle_header(attacker_name, defender_name)
                 st.rerun()
 
         if 'current_battle' in st.session_state:
