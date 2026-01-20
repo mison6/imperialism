@@ -1,0 +1,12 @@
+name: imperialism
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - geopy
+  - numpy
+  - pandas
+  - plotly
+  - python=3.13
+  - scipy
+  - streamlit
