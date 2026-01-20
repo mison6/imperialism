@@ -2,175 +2,225 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import random
-from geopy.geocoders import Nominatim
+import json
+from urllib.request import urlopen, Request
 import plotly.express as px
 from scipy.spatial import KDTree
 
 # --- CONFIG & SETUP ---
-st.set_page_config(page_title="Madden Imperialism", layout="wide")
+st.set_page_config(page_title="Madden Imperialism Engine", layout="wide")
 
-# Initialize Session State for game persistence
+# --- DATA SOURCE CONSTANTS ---
+# 1. GeoJSON for drawing the county lines (Plotly's standard dataset)
+COUNTY_GEOJSON_URL = "https://raw.githubusercontent.com/plotly/datasets/master/geojson-counties-fips.json"
+
+# 2. Centroids for calculating ownership (Official US Census 2020 Data)
+# This is a .txt file but formatted as CSV. It is the authoritative source.
+CENSUS_CENTER_URL = "https://www2.census.gov/geo/docs/reference/cenpop2020/county/CenPop2020_Mean_CO.txt"
+
+# --- STATE MANAGEMENT ---
 if 'game_active' not in st.session_state:
     st.session_state.game_active = False
 if 'teams' not in st.session_state:
-    st.session_state.teams = [] # List of dicts: {name, address, lat, lon, color, active}
+    st.session_state.teams = []
 if 'county_assignments' not in st.session_state:
-    st.session_state.county_assignments = {} # FIPS: Team Name
+    st.session_state.county_assignments = {}
 
-# --- DATA FETCHING ---
+# --- DATA FETCHING & PROCESSING ---
 @st.cache_data
-def load_county_data():
-    """Loads US County centroids (Lat/Lon for every county)."""
-    url = "https://raw.githubusercontent.com/kjhealy/us-county-nodes/master/data/county-centroids.csv"
-    df = pd.read_csv(url)
-    return df[['fips', 'name', 'state', 'lat', 'lng']].rename(columns={'lng': 'lon'})
-
-@st.cache_data
-def geocode_address(address):
-    """Converts string address to Lat/Lon using Nominatim."""
+def load_map_resources():
+    """
+    Fetches map data from authoritative sources to avoid 404s.
+    """
+    # 1. Load GeoJSON
     try:
-        geolocator = Nominatim(user_agent="madden_imperialism_engine")
-        location = geolocator.geocode(address)
-        if location:
-            return location.latitude, location.longitude
-    except Exception:
-        pass
-    return None, None
+        # User-Agent header is often required to avoid being blocked as a bot
+        req = Request(COUNTY_GEOJSON_URL, headers={'User-Agent': 'Mozilla/5.0'})
+        with urlopen(req) as response:
+            geojson = json.load(response)
+    except Exception as e:
+        st.error(f"Error loading GeoJSON: {e}")
+        return None, None
 
-def get_random_color():
-    return f"rgb({random.randint(50, 255)}, {random.randint(50, 255)}, {random.randint(50, 255)})"
+    # 2. Load Census Data
+    try:
+        # The Census file is CSV format.
+        # Columns: STATEFP, COUNTYFP, COUNAME, STNAME, POPULATION, LATITUDE, LONGITUDE
+        df = pd.read_csv(CENSUS_CENTER_URL, dtype={'STATEFP': str, 'COUNTYFP': str})
+
+        # Construct the full 5-digit FIPS code (State + County)
+        # Ensure proper padding: State (2 chars), County (3 chars)
+        df['STATEFP'] = df['STATEFP'].apply(lambda x: x.zfill(2))
+        df['COUNTYFP'] = df['COUNTYFP'].apply(lambda x: x.zfill(3))
+        df['fips'] = df['STATEFP'] + df['COUNTYFP']
+
+        # Rename for consistency
+        df = df.rename(columns={'LATITUDE': 'lat', 'LONGITUDE': 'lon', 'COUNAME': 'name'})
+
+        # Filter to just what we need
+        clean_df = df[['fips', 'name', 'lat', 'lon']].dropna()
+        return geojson, clean_df
+
+    except Exception as e:
+        st.error(f"Error loading Census Data: {e}")
+        return None, None
+
+def get_team_color(index):
+    # Standard Imperialism Palette
+    colors = [
+        "#E31837", "#002244", "#0B2265", "#0076B6", "#A71930",
+        "#241773", "#0085CA", "#FB4F14", "#FFB612", "#101820"
+    ]
+    return colors[index % len(colors)]
 
 # --- GAME LOGIC ---
-def assign_initial_territories(teams, counties):
-    """Voronoi-style assignment: every county belongs to the closest team."""
+def assign_initial_territories(teams, counties_df):
+    """
+    Core Imperialism Logic:
+    For every single county in the US, find which team is geometrically closest.
+    This creates the "Voronoi" effect on the map.
+    """
     team_coords = np.array([[t['lat'], t['lon']] for t in teams])
-    county_coords = counties[['lat', 'lon']].values
+    county_coords = counties_df[['lat', 'lon']].values
 
-    # KDTree allows for near-instant nearest-neighbor lookups
+    # KDTree allows us to search nearest neighbors for 3000+ counties instantly
     tree = KDTree(team_coords)
     _, indices = tree.query(county_coords)
 
-    assignments = {}
-    for i, team_idx in enumerate(indices):
-        fips = str(counties.iloc[i]['fips']).zfill(5)
-        assignments[fips] = teams[team_idx]['name']
+    # Map FIPS Code -> Team Name
+    assignments = {counties_df.iloc[i]['fips']: teams[team_idx]['name'] for i, team_idx in enumerate(indices)}
     return assignments
 
-def find_defender(attacker_name, direction, teams_dict, counties, assignments):
-    """Calculates the defender based on an attack vector from the attacker's city."""
-    attacker = teams_dict[attacker_name]
-
-    # Direction vectors (lat, lon)
-    vectors = {
-        "North": (2, 0), "South": (-2, 0), "East": (0, 2), "West": (0, -2),
-        "NE": (1.5, 1.5), "NW": (1.5, -1.5), "SE": (-1.5, 1.5), "SW": (-1.5, -1.5)
-    }
-    dy, dx = vectors[direction]
-
-    # We look for a county center in that general direction
-    target_lat = attacker['lat'] + dy
-    target_lon = attacker['lon'] + dx
-
-    county_coords = counties[['lat', 'lon']].values
-    tree = KDTree(county_coords)
-    _, idx = tree.query([target_lat, target_lon])
-
-    target_fips = str(counties.iloc[idx]['fips']).zfill(5)
-    defender_name = assignments.get(target_fips)
-
-    # Handle edge case where it targets its own land
-    if defender_name == attacker_name:
-        others = [t['name'] for t in st.session_state.teams if t['active'] and t['name'] != attacker_name]
-        return random.choice(others) if others else "No Neighbors"
-
-    return defender_name
-
 # --- UI ---
-st.title("🏈 Madden Imperialism Engine")
-st.write("Determine your matchups, play your games, and conquer the map.")
+st.title("🏟️ Madden Imperialism: The Professional Engine")
+st.markdown("Replicating the viral map style using official US Census data.")
 
 with st.sidebar:
-    st.header("Team Entry")
-    team_list_raw = st.text_area("Teams (Name, Address)",
-                                "Chicago Bears, Soldier Field, Chicago\nGreen Bay Packers, Lambeau Field, Green Bay\nDetroit Lions, Ford Field, Detroit",
-                                help="One team per line: Name, Address")
+    st.header("1. Roster Setup")
+    st.info("Input Format: Team Name, Latitude, Longitude")
 
-    if st.button("Generate Map"):
-        counties = load_county_data()
-        new_teams = []
-        for line in team_list_raw.split('\n'):
-            if ',' in line:
-                name, addr = line.split(',', 1)
-                lat, lon = geocode_address(addr.strip())
-                if lat:
-                    new_teams.append({
-                        "name": name.strip(), "lat": lat, "lon": lon,
-                        "color": get_random_color(), "active": True
-                    })
+    default_teams = (
+        "Chicago Bears, 41.8623, -87.6167\n"
+        "Green Bay Packers, 44.5013, -88.0622\n"
+        "Detroit Lions, 42.3400, -83.0456\n"
+        "Minnesota Vikings, 44.9735, -93.2575\n"
+        "Kansas City Chiefs, 39.0489, -94.4839\n"
+        "Dallas Cowboys, 32.7473, -97.0945"
+    )
+    team_input = st.text_area("Enter Teams", default_teams, height=200)
 
-        if new_teams:
-            st.session_state.teams = new_teams
-            st.session_state.county_assignments = assign_initial_territories(new_teams, counties)
-            st.session_state.game_active = True
-            st.rerun()
+    if st.button("Generate Imperialism Map"):
+        with st.spinner("Fetching Census data & Calculating territories..."):
+            geojson, counties_df = load_map_resources()
+
+            if geojson and not counties_df.empty:
+                processed_teams = []
+                for i, line in enumerate(team_input.split('\n')):
+                    if ',' in line:
+                        parts = [p.strip() for p in line.split(',')]
+                        if len(parts) >= 3:
+                            processed_teams.append({
+                                "name": parts[0],
+                                "lat": float(parts[1]),
+                                "lon": float(parts[2]),
+                                "color": get_team_color(i),
+                                "active": True
+                            })
+
+                if processed_teams:
+                    st.session_state.teams = processed_teams
+                    st.session_state.county_assignments = assign_initial_territories(processed_teams, counties_df)
+                    st.session_state.game_active = True
+                    st.rerun()
+            else:
+                st.error("Failed to load map resources. Please check connection.")
 
 if st.session_state.game_active:
-    counties = load_county_data()
-    teams_dict = {t['name']: t for t in st.session_state.teams}
+    geojson, counties_df = load_map_resources()
     active_teams = [t for t in st.session_state.teams if t['active']]
 
-    col1, col2 = st.columns([2, 1])
+    col_map, col_ctrl = st.columns([3, 1])
 
-    with col2:
-        st.subheader("The Spinners")
-        if st.button("SPIN!", use_container_width=True):
-            attacker = random.choice(active_teams)
-            direction = random.choice(["North", "South", "East", "West", "NE", "NW", "SE", "SW"])
-            defender = find_defender(attacker['name'], direction, teams_dict, counties, st.session_state.county_assignments)
+    with col_ctrl:
+        st.subheader("War Room")
+        st.metric("Active Empires", len(active_teams))
 
-            st.session_state.current_battle = {
-                "attacker": attacker['name'],
-                "defender": defender,
-                "direction": direction
-            }
+        if st.button("🔥 Simulate Battle", use_container_width=True):
+            if len(active_teams) > 1:
+                # 1. Pick Attacker
+                attacker = random.choice(active_teams)
+
+                # 2. Pick Defender (Simplified Logic: Pick random other active team)
+                # In a full v2, we would calculate actual neighbors here
+                potential_defenders = [t for t in active_teams if t['name'] != attacker['name']]
+                if potential_defenders:
+                    defender = random.choice(potential_defenders)
+                    st.session_state.current_battle = {"att": attacker['name'], "def": defender['name']}
 
         if 'current_battle' in st.session_state:
-            b = st.session_state.current_battle
-            st.info(f"**Attacker:** {b['attacker']} (Moving {b['direction']})")
-            st.warning(f"**Defender:** {b['defender']}")
+            battle = st.session_state.current_battle
+            st.divider()
+            st.markdown(f"### ⚔️ {battle['att']} vs {battle['def']}")
 
-            winner = st.selectbox("Who won the game?", [b['attacker'], b['defender']])
-            if st.button("Update Empire"):
-                loser = b['defender'] if winner == b['attacker'] else b['attacker']
+            winner = st.radio("Battle Outcome:", [battle['att'], battle['def']])
 
-                # Update assignments
+            if st.button("Confirm Conquest"):
+                loser_name = battle['def'] if winner == battle['att'] else battle['att']
+                winner_name = winner
+
+                # Update Map: Winner takes ALL of Loser's land
                 new_map = st.session_state.county_assignments.copy()
+                conquered_count = 0
                 for fips, owner in new_map.items():
-                    if owner == loser:
-                        new_map[fips] = winner
+                    if owner == loser_name:
+                        new_map[fips] = winner_name
+                        conquered_count += 1
                 st.session_state.county_assignments = new_map
 
-                # Deactivate loser
+                # Deactivate Loser
                 for t in st.session_state.teams:
-                    if t['name'] == loser: t['active'] = False
+                    if t['name'] == loser_name:
+                        t['active'] = False
 
+                st.toast(f"{winner_name} annexed {conquered_count} counties from {loser_name}!")
                 del st.session_state.current_battle
                 st.rerun()
 
-    with col1:
-        # Prepare data for map
-        map_df = counties.copy()
-        map_df['fips_str'] = map_df['fips'].apply(lambda x: str(x).zfill(5))
-        map_df['Owner'] = map_df['fips_str'].map(st.session_state.county_assignments)
+    with col_map:
+        # Prepare Data for Choropleth
+        plot_df = pd.DataFrame(list(st.session_state.county_assignments.items()), columns=['fips', 'Team'])
 
-        # Plot using Plotly Scatter Mapbox (Centroids)
-        fig = px.scatter_mapbox(
-            map_df, lat="lat", lon="lon", color="Owner",
-            color_discrete_map={t['name']: t['color'] for t in st.session_state.teams},
-            hover_name="name", zoom=3, height=600
+        # Color mapping dictionary for the teams
+        color_map = {t['name']: t['color'] for t in st.session_state.teams}
+
+        # Plotly Choropleth - The standard for Imperialism Maps
+        fig = px.choropleth(
+            plot_df,
+            geojson=geojson,
+            locations='fips',
+            color='Team',
+            color_discrete_map=color_map,
+            scope="usa",
+            title="Territorial Control",
+            hover_data={'fips': False, 'Team': True}
         )
-        fig.update_layout(mapbox_style="carto-positron", margin={"r":0,"t":0,"l":0,"b":0})
+
+        fig.update_layout(
+            margin={"r":0,"t":30,"l":0,"b":0},
+            height=650,
+            dragmode=False,
+            showlegend=True,
+            legend=dict(yanchor="top", y=0.95, xanchor="left", x=0.01, bgcolor="rgba(0,0,0,0)"),
+            geo=dict(
+                lakecolor='lightblue',
+                projection_type='albers usa' # The classic curved US map look
+            )
+        )
+
+        # Thin white lines for county borders make it look cleaner
+        fig.update_traces(marker_line_width=0.1, marker_line_color='white')
+
         st.plotly_chart(fig, use_container_width=True)
 
 else:
-    st.info("Please enter your teams and addresses in the sidebar to initialize the map.")
+    st.info("👈 Enter your teams in the sidebar to generate the initial map.")
