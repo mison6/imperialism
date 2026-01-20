@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 import random
 import json
+import os
 from urllib.request import urlopen, Request
 import plotly.express as px
 from scipy.spatial import KDTree
@@ -34,7 +35,6 @@ def load_map_resources():
     """
     # 1. Load GeoJSON
     try:
-        # User-Agent header is often required to avoid being blocked as a bot
         req = Request(COUNTY_GEOJSON_URL, headers={'User-Agent': 'Mozilla/5.0'})
         with urlopen(req) as response:
             geojson = json.load(response)
@@ -44,50 +44,49 @@ def load_map_resources():
 
     # 2. Load Census Data
     try:
-        # The Census file is CSV format.
-        # Columns: STATEFP, COUNTYFP, COUNAME, STNAME, POPULATION, LATITUDE, LONGITUDE
         df = pd.read_csv(CENSUS_CENTER_URL, dtype={'STATEFP': str, 'COUNTYFP': str})
-
-        # Construct the full 5-digit FIPS code (State + County)
-        # Ensure proper padding: State (2 chars), County (3 chars)
         df['STATEFP'] = df['STATEFP'].apply(lambda x: x.zfill(2))
         df['COUNTYFP'] = df['COUNTYFP'].apply(lambda x: x.zfill(3))
         df['fips'] = df['STATEFP'] + df['COUNTYFP']
-
-        # Rename for consistency
         df = df.rename(columns={'LATITUDE': 'lat', 'LONGITUDE': 'lon', 'COUNAME': 'name'})
-
-        # Filter to just what we need
-        clean_df = df[['fips', 'name', 'lat', 'lon']].dropna()
-        return geojson, clean_df
+        return geojson, df[['fips', 'name', 'lat', 'lon']].dropna()
 
     except Exception as e:
         st.error(f"Error loading Census Data: {e}")
         return None, None
 
 def get_team_color(index):
-    # Standard Imperialism Palette
     colors = [
         "#E31837", "#002244", "#0B2265", "#0076B6", "#A71930",
         "#241773", "#0085CA", "#FB4F14", "#FFB612", "#101820"
     ]
     return colors[index % len(colors)]
 
+def process_teams_df(df):
+    """Helper to process a dataframe into the teams list format."""
+    processed = []
+    # Standardize column names
+    df.columns = [c.lower() for c in df.columns]
+
+    # Check for required columns
+    if all(col in df.columns for col in ['team', 'latitude', 'longitude']):
+        for i, row in df.iterrows():
+            color = row['color'] if 'color' in row else get_team_color(i)
+            processed.append({
+                "name": row['team'],
+                "lat": float(row['latitude']),
+                "lon": float(row['longitude']),
+                "color": color,
+                "active": True
+            })
+    return processed
+
 # --- GAME LOGIC ---
 def assign_initial_territories(teams, counties_df):
-    """
-    Core Imperialism Logic:
-    For every single county in the US, find which team is geometrically closest.
-    This creates the "Voronoi" effect on the map.
-    """
     team_coords = np.array([[t['lat'], t['lon']] for t in teams])
     county_coords = counties_df[['lat', 'lon']].values
-
-    # KDTree allows us to search nearest neighbors for 3000+ counties instantly
     tree = KDTree(team_coords)
     _, indices = tree.query(county_coords)
-
-    # Map FIPS Code -> Team Name
     assignments = {counties_df.iloc[i]['fips']: teams[team_idx]['name'] for i, team_idx in enumerate(indices)}
     return assignments
 
@@ -97,41 +96,83 @@ st.markdown("Replicating the viral map style using official US Census data.")
 
 with st.sidebar:
     st.header("1. Roster Setup")
-    st.info("Input Format: Team Name, Latitude, Longitude")
 
-    default_teams = (
-        "Chicago Bears, 41.8623, -87.6167\n"
-        "Green Bay Packers, 44.5013, -88.0622\n"
-        "Detroit Lions, 42.3400, -83.0456\n"
-        "Minnesota Vikings, 44.9735, -93.2575\n"
-        "Kansas City Chiefs, 39.0489, -94.4839\n"
-        "Dallas Cowboys, 32.7473, -97.0945"
-    )
-    team_input = st.text_area("Enter Teams", default_teams, height=200)
+    # Input Method Selection - Default is now "Default NFL"
+    input_method = st.radio("Input Method", ["Default NFL", "Upload CSV", "Manual Entry"])
+
+    processed_teams = []
+
+    if input_method == "Default NFL":
+        # Look for the file in priority order
+        possible_paths = ["inputs/nfl.csv"]
+        found_path = None
+        for p in possible_paths:
+            if os.path.exists(p):
+                found_path = p
+                break
+
+        if found_path:
+            try:
+                df_default = pd.read_csv(found_path)
+                processed_teams = process_teams_df(df_default)
+                if processed_teams:
+                    st.success(f"Loaded {len(processed_teams)} teams from {found_path}!")
+                else:
+                    st.error("Default file found but columns missing.")
+            except Exception as e:
+                st.error(f"Error reading default file: {e}")
+        else:
+            st.warning("Default file (inputs/nfl.csv or nfl_teams.csv) not found. Please upload a CSV.")
+
+    elif input_method == "Upload CSV":
+        uploaded_file = st.file_uploader("Upload Teams CSV", type=["csv"], help="Columns required: Team, Latitude, Longitude. Optional: Color")
+        if uploaded_file is not None:
+            try:
+                df_upload = pd.read_csv(uploaded_file)
+                processed_teams = process_teams_df(df_upload)
+                if processed_teams:
+                    st.success(f"Loaded {len(processed_teams)} teams from CSV!")
+                else:
+                    st.error("CSV must contain columns: 'Team', 'Latitude', 'Longitude'")
+            except Exception as e:
+                st.error(f"Error parsing CSV: {e}")
+
+    else:
+        st.info("Input Format: Team Name, Latitude, Longitude")
+        default_teams = (
+            "Chicago Bears, 41.8623, -87.6167\n"
+            "Green Bay Packers, 44.5013, -88.0622\n"
+            "Detroit Lions, 42.3400, -83.0456\n"
+            "Minnesota Vikings, 44.9735, -93.2575\n"
+            "Kansas City Chiefs, 39.0489, -94.4839\n"
+            "Dallas Cowboys, 32.7473, -97.0945"
+        )
+        team_input = st.text_area("Enter Teams", default_teams, height=200)
+
+        for i, line in enumerate(team_input.split('\n')):
+            if ',' in line:
+                parts = [p.strip() for p in line.split(',')]
+                if len(parts) >= 3:
+                    processed_teams.append({
+                        "name": parts[0],
+                        "lat": float(parts[1]),
+                        "lon": float(parts[2]),
+                        "color": get_team_color(i),
+                        "active": True
+                    })
 
     if st.button("Generate Imperialism Map"):
         with st.spinner("Fetching Census data & Calculating territories..."):
             geojson, counties_df = load_map_resources()
 
             if geojson and not counties_df.empty:
-                processed_teams = []
-                for i, line in enumerate(team_input.split('\n')):
-                    if ',' in line:
-                        parts = [p.strip() for p in line.split(',')]
-                        if len(parts) >= 3:
-                            processed_teams.append({
-                                "name": parts[0],
-                                "lat": float(parts[1]),
-                                "lon": float(parts[2]),
-                                "color": get_team_color(i),
-                                "active": True
-                            })
-
                 if processed_teams:
                     st.session_state.teams = processed_teams
                     st.session_state.county_assignments = assign_initial_territories(processed_teams, counties_df)
                     st.session_state.game_active = True
                     st.rerun()
+                else:
+                    st.warning("No valid teams found. Please check your input.")
             else:
                 st.error("Failed to load map resources. Please check connection.")
 
@@ -151,7 +192,6 @@ if st.session_state.game_active:
                 attacker = random.choice(active_teams)
 
                 # 2. Pick Defender (Simplified Logic: Pick random other active team)
-                # In a full v2, we would calculate actual neighbors here
                 potential_defenders = [t for t in active_teams if t['name'] != attacker['name']]
                 if potential_defenders:
                     defender = random.choice(potential_defenders)
@@ -187,13 +227,9 @@ if st.session_state.game_active:
                 st.rerun()
 
     with col_map:
-        # Prepare Data for Choropleth
         plot_df = pd.DataFrame(list(st.session_state.county_assignments.items()), columns=['fips', 'Team'])
-
-        # Color mapping dictionary for the teams
         color_map = {t['name']: t['color'] for t in st.session_state.teams}
 
-        # Plotly Choropleth - The standard for Imperialism Maps
         fig = px.choropleth(
             plot_df,
             geojson=geojson,
@@ -206,21 +242,25 @@ if st.session_state.game_active:
         )
 
         fig.update_layout(
-            margin={"r":0,"t":30,"l":0,"b":0},
+            margin={"r":0,"t":30,"l":0,"b":50}, # Added bottom margin for legend space
             height=650,
             dragmode=False,
             showlegend=True,
-            legend=dict(yanchor="top", y=0.95, xanchor="left", x=0.01, bgcolor="rgba(0,0,0,0)"),
+            # Legend moved below the map
+            legend=dict(
+                orientation="h",
+                yanchor="top",
+                y=-0.05,
+                xanchor="center",
+                x=0.5
+            ),
             geo=dict(
                 lakecolor='lightblue',
-                projection_type='albers usa' # The classic curved US map look
+                projection_type='albers usa'
             )
         )
-
-        # Thin white lines for county borders make it look cleaner
         fig.update_traces(marker_line_width=0.1, marker_line_color='white')
-
         st.plotly_chart(fig, use_container_width=True)
 
 else:
-    st.info("👈 Enter your teams in the sidebar to generate the initial map.")
+    st.info("👈 Upload the provided NFL CSV or enter teams manually to generate the map.")
