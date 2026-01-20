@@ -148,34 +148,37 @@ if st.session_state.game_active:
     with col_ctrl:
         st.subheader("🎡 The Battle Wheel")
 
-        if st.button("🎰 SPIN FOR ATTACKER", use_container_width=True):
+        if st.button("🎰 SPIN FOR BATTLE", use_container_width=True):
+            # Phase 1: Attacker Spinner
             placeholder = st.empty()
+            attacker = None
+
             for _ in range(12):
                 temp_team = random.choice(active_teams)
-                placeholder.markdown(f"<h2 style='text-align:center;'>🌀 Picking Team...</h2><h1 style='text-align:center; color:{temp_team['color']};'>{temp_team['name']}</h1>", unsafe_allow_html=True)
-                time.sleep(0.1)
+                placeholder.markdown(f"<h2 style='text-align:center;'>🌀 Picking Attacker...</h2><h1 style='text-align:center; color:{temp_team['color']};'>{temp_team['name']}</h1>", unsafe_allow_html=True)
+                time.sleep(0.08)
 
             attacker = random.choice(active_teams)
-            st.session_state.attacker = attacker['name']
-            placeholder.markdown(f"<h2 style='text-align:center;'>⚔️ ATTACKER</h2><h1 style='text-align:center; color:{attacker['color']};'>{attacker['name']}</h1>", unsafe_allow_html=True)
+            attacker_name = attacker['name']
+            attacker_color = attacker['color']
 
-        if 'attacker' in st.session_state:
-            st.divider()
-            if st.button("🧭 SPIN FOR DIRECTION", use_container_width=True):
-                directions = [("NORTH ⬆️", "N"), ("SOUTH ⬇️", "S"), ("EAST ➡️", "E"), ("WEST ⬅️", "W")]
-                placeholder = st.empty()
+            # Show Attacker Result briefly
+            placeholder.markdown(f"<h2 style='text-align:center;'>⚔️ ATTACKER</h2><h1 style='text-align:center; color:{attacker_color};'>{attacker_name}</h1>", unsafe_allow_html=True)
+            time.sleep(1.0)
+
+            # Phase 2: Direction / Target Spinner
+            neighbors = get_neighbors(attacker_name)
+            if neighbors:
                 for _ in range(12):
-                    label, icon = random.choice(directions)
-                    placeholder.markdown(f"<h1 style='text-align:center;'>{label}</h1>", unsafe_allow_html=True)
-                    time.sleep(0.1)
+                    temp_neighbor = random.choice(neighbors)
+                    placeholder.markdown(f"<h2 style='text-align:center;'>🏹 Hunting Target...</h2><h1 style='text-align:center;'>{temp_neighbor}</h1>", unsafe_allow_html=True)
+                    time.sleep(0.08)
 
-                neighbors = get_neighbors(st.session_state.attacker)
-                if neighbors:
-                    target = random.choice(neighbors)
-                    st.session_state.current_battle = {"att": st.session_state.attacker, "def": target}
-                    placeholder.markdown(f"<h2 style='text-align:center;'>🎯 TARGET ACQUIRED</h2><h1 style='text-align:center;'>{target}</h1>", unsafe_allow_html=True)
-                else:
-                    placeholder.error("No neighbors found! Choose a different team.")
+                target_name = random.choice(neighbors)
+                st.session_state.current_battle = {"att": attacker_name, "def": target_name}
+                placeholder.markdown(f"<h2 style='text-align:center;'>🎯 MATCHUP ACQUIRED</h2><h1 style='text-align:center; color:{attacker_color};'>{attacker_name}</h1><h3 style='text-align:center;'>VS</h3><h1 style='text-align:center;'>{target_name}</h1>", unsafe_allow_html=True)
+            else:
+                placeholder.error(f"{attacker_name} has no neighbors to attack!")
 
         if 'current_battle' in st.session_state:
             b = st.session_state.current_battle
@@ -190,7 +193,6 @@ if st.session_state.game_active:
                     if t['name'] == loser: t['active'] = False
 
                 del st.session_state.current_battle
-                if 'attacker' in st.session_state: del st.session_state.attacker
                 st.balloons()
                 st.rerun()
 
@@ -207,8 +209,8 @@ if st.session_state.game_active:
             colorscale=[[i/(len(st.session_state.teams)-1), t['color']] for i, t in enumerate(st.session_state.teams)],
             showscale=False,
             marker_line_width=0,
-            text=owners_list,  # Add team names back to the hover data
-            hoverinfo="text"   # Ensure only the team name shows on hover
+            text=owners_list,
+            hoverinfo="text"
         ))
         fig.update_layout(
             margin={"r":0,"t":0,"l":0,"b":0},
