@@ -12,6 +12,18 @@ from scipy.spatial import KDTree
 # --- CONFIG & SETUP ---
 st.set_page_config(page_title="Madden Imperialism Engine", layout="wide")
 
+# Custom CSS for UI polish
+st.markdown("""
+    <style>
+    .reportview-container .main .block-container { padding-top: 2rem; }
+    .stButton>button { border-radius: 8px; }
+    /* Ensure the map doesn't flicker by maintaining height */
+    div[data-testid="stVerticalBlock"] > div:has(div.js-plotly-plot) {
+        min-height: 650px;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
 # --- DATA SOURCE CONSTANTS ---
 COUNTY_GEOJSON_URL = "https://raw.githubusercontent.com/plotly/datasets/master/geojson-counties-fips.json"
 CENSUS_CENTER_URL = "https://www2.census.gov/geo/docs/reference/cenpop2020/county/CenPop2020_Mean_CO.txt"
@@ -42,7 +54,6 @@ def load_map_resources():
         req = Request(COUNTY_GEOJSON_URL, headers={'User-Agent': 'Mozilla/5.0'})
         with urlopen(req) as response:
             geojson = json.load(response)
-        # Simplify geometry for performance
         for feature in geojson['features']:
             geom = feature['geometry']
             if geom['type'] == 'Polygon':
@@ -121,10 +132,18 @@ def render_map(geojson, county_assignments, teams_list):
         hoverinfo="text",
         hovertemplate="<b>Owner:</b> %{text}<extra></extra>"
     ))
+
     fig.update_layout(
         margin={"r":0,"t":0,"l":0,"b":0},
         height=650,
-        geo=dict(scope='usa', projection_type='albers usa', showlakes=True, lakecolor='rgb(255, 255, 255)')
+        geo=dict(
+            scope='usa',
+            projection_type='albers usa',
+            showlakes=True,
+            lakecolor='rgb(255, 255, 255)',
+            bgcolor='rgba(0,0,0,0)'
+        ),
+        transition={'duration': 500, 'easing': 'cubic-in-out'}
     )
     return fig
 
@@ -156,9 +175,7 @@ with st.sidebar:
     else:
         uploaded_file = st.file_uploader("📂 Load JSON Save", type=["json"])
         if uploaded_file:
-            # Check if this is a new file we haven't replayed yet
             current_file_id = uploaded_file.name + str(uploaded_file.size)
-
             if st.session_state.last_loaded_file_id != current_file_id:
                 data = json.load(uploaded_file)
                 st.session_state.teams = data["teams"]
@@ -167,7 +184,7 @@ with st.sidebar:
                 st.session_state.game_active = True
                 st.session_state.trigger_replay = True
                 st.session_state.last_loaded_file_id = current_file_id
-                st.success("Save Loaded! Starting replay...")
+                st.success("Save Loaded!")
 
     if st.session_state.game_active:
         st.divider()
@@ -187,46 +204,57 @@ if st.session_state.game_active:
     with col_map:
         map_placeholder = st.empty()
         if not st.session_state.is_replaying:
-            map_placeholder.plotly_chart(render_map(geojson, st.session_state.county_assignments, st.session_state.teams), use_container_width=True)
+            # Fixed static key for the primary map
+            map_placeholder.plotly_chart(
+                render_map(geojson, st.session_state.county_assignments, st.session_state.teams),
+                use_container_width=True,
+                key="primary_map"
+            )
 
     with col_ctrl:
         st.subheader("🛠️ Battle Management")
         replay_speed = st.slider("Animation Speed", 0.5, 5.0, 1.0)
 
-        # Trigger Replay logic
         if (st.button("⏪ Watch History") or st.session_state.trigger_replay) and st.session_state.battle_log:
             st.session_state.trigger_replay = False
             st.session_state.is_replaying = True
 
-            # 1. Reset actual session state to Day 0
             st.session_state.county_assignments = assign_initial_territories(st.session_state.teams, counties_df)
-            for t in st.session_state.teams:
-                t['active'] = True
+            for t in st.session_state.teams: t['active'] = True
 
             replay_info = st.empty()
-            replay_info.info("🎬 Replaying History: Day 0")
-            map_placeholder.plotly_chart(render_map(geojson, st.session_state.county_assignments, st.session_state.teams), use_container_width=True)
-            time.sleep(1.5 / replay_speed)
+            replay_info.info("🎬 Replaying History...")
 
-            # 2. Sequential state progression
+            # Initial Map for Replay
+            map_placeholder.plotly_chart(
+                render_map(geojson, st.session_state.county_assignments, st.session_state.teams),
+                use_container_width=True,
+                key="replay_init"
+            )
+            time.sleep(1.0 / replay_speed)
+
             for i, battle in enumerate(st.session_state.battle_log):
                 att, dfn, win = battle['att'], battle['def'], battle['winner']
                 loser = dfn if win == att else att
 
                 replay_info.markdown(f"**Battle {i+1}:** {att} ⚔️ {dfn} ... **Winner: {win}!**")
 
-                # Update actual session state
                 st.session_state.county_assignments = {f: (win if o == loser else o) for f, o in st.session_state.county_assignments.items()}
                 for t in st.session_state.teams:
                     if t['name'] == loser: t['active'] = False
 
-                map_placeholder.plotly_chart(render_map(geojson, st.session_state.county_assignments, st.session_state.teams), use_container_width=True)
-                time.sleep(1.0 / replay_speed)
+                # Dynamic key avoids the DuplicateElementId error during loops
+                map_placeholder.plotly_chart(
+                    render_map(geojson, st.session_state.county_assignments, st.session_state.teams),
+                    use_container_width=True,
+                    key=f"replay_step_{i}"
+                )
+                time.sleep(0.8 / replay_speed)
 
             st.session_state.is_replaying = False
-            replay_info.success("✅ Replay Complete! Final state persisted.")
+            replay_info.success("✅ Replay Complete!")
             time.sleep(1.0)
-            st.rerun() # Refresh to clear out UI artifacts and lock the final state
+            st.rerun()
 
         st.divider()
         if st.button("🎰 SPIN FOR BATTLE", use_container_width=True, disabled=st.session_state.is_replaying):
