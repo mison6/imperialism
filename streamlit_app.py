@@ -144,8 +144,6 @@ def save_game_state():
 @st.cache_data
 def load_map_resources():
     try:
-        # OPTIMIZATION: Return the URL string instead of loading the massive JSON object.
-        # This allows Plotly.js (on the iPad) to fetch and cache it directly.
         geojson_ref = COUNTY_GEOJSON_URL
 
         df = pd.read_csv(CENSUS_CENTER_URL, dtype={'STATEFP': str, 'COUNTYFP': str})
@@ -186,7 +184,11 @@ def hex_to_rgba(hex_color, alpha):
     return f'rgba({rgb[0]}, {rgb[1]}, {rgb[2]}, {alpha})'
 
 def render_map(geojson, county_assignments, teams_list, highlight_teams=None):
+    # FIXED: We use the master teams_list (all 32 teams) to define the color range
+    # This ensures "Team X" always has the same index and thus the same color.
     team_to_id = {t['name']: i for i, t in enumerate(teams_list)}
+    num_teams = len(teams_list)
+
     fips_list = list(county_assignments.keys())
     owners_list = list(county_assignments.values())
 
@@ -194,7 +196,7 @@ def render_map(geojson, county_assignments, teams_list, highlight_teams=None):
 
     colorscale = []
     for i, t in enumerate(teams_list):
-        scale_val = i / (max(1, len(teams_list) - 1)) if len(teams_list) > 1 else 0
+        scale_val = i / (max(1, num_teams - 1)) if num_teams > 1 else 0
         base_color = t['color']
 
         if highlight_teams:
@@ -208,19 +210,21 @@ def render_map(geojson, county_assignments, teams_list, highlight_teams=None):
         colorscale.append([scale_val, color])
 
     fig = go.Figure(go.Choropleth(
-        geojson=geojson, # Now passing the URL string directly
+        geojson=geojson,
         locations=fips_list,
         z=z_vals,
         colorscale=colorscale,
         showscale=False,
         marker_line_width=0,
+        zmin=0,                  # FIXED: Anchor the range
+        zmax=num_teams - 1,      # FIXED: Anchor the range
         text=owners_list,
         hoverinfo="text"
     ))
 
     fig.update_layout(
         margin={"r":0,"t":0,"l":0,"b":0},
-        height=400, # Optimized height to fit on screen with header
+        height=400,
         uirevision='constant',
         geo=dict(
             scope='usa',
@@ -250,7 +254,6 @@ def format_battle_header(att, dfn, winner=None, label="BATTLE", spinning=False, 
     status_html = ""
 
     if winner:
-        # Change the entire header background to the winner's color
         win_c = att_c if winner == att else dfn_c
         header_style = f"background-color: {win_c}; color: white; border: none;"
         status_html = f"<div class='winner-status'>🏆 {winner} WINS!</div>"
@@ -281,12 +284,10 @@ geojson, counties_df, adj_dict = load_map_resources()
 if adj_dict:
     st.session_state.adjacencies = adj_dict
 
-# Check for active battle in the history log
 active_battle = None
 if st.session_state.battle_log and st.session_state.battle_log[-1].get('winner') is None:
     active_battle = st.session_state.battle_log[-1]
 
-# Ensure header content matches current state
 if active_battle and not st.session_state.is_replaying:
     st.session_state.last_header_content = format_battle_header(active_battle['att'], active_battle['def'])
 
@@ -459,6 +460,5 @@ if st.session_state.game_active:
                     save_game_state()
                     st.rerun()
 
-    # Footer stays at the bottom of the column setup
     st.markdown("---")
     st.caption(f"Unlocking potential once the sludge/friction/sand in the gears is removed. | Active: {len(active_teams)} teams")
