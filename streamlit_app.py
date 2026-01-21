@@ -286,47 +286,55 @@ with st.sidebar:
                 del st.session_state[key]
             st.rerun()
 
+# PERSISTENT SETUP CONTAINER
+setup_ui_container = st.empty()
+
 if not st.session_state.game_active:
-    st.title("🏟️ Madden Imperialism Engine")
-    st.info("No active game found. Start a new one or upload a save.")
+    with setup_ui_container.container():
+        st.title("🏟️ Madden Imperialism Engine")
+        st.info("No active game found. Start a new one or upload a save.")
 
-    uploaded_file = st.file_uploader("📂 Upload Save File", type=["json"])
-    if uploaded_file:
-        data = json.load(uploaded_file)
-        st.session_state.teams = data["teams"]
-        st.session_state.battle_log = data.get("history", [])
-        st.session_state.county_assignments = assign_initial_territories(st.session_state.teams, counties_df)
-        st.session_state.trigger_replay = True
-        st.session_state.game_active = True
-        save_game_state()
-        st.rerun()
+        uploaded_file = st.file_uploader("📂 Upload Save File", type=["json"])
+        if uploaded_file:
+            data = json.load(uploaded_file)
+            st.session_state.teams = data["teams"]
+            st.session_state.battle_log = data.get("history", [])
+            st.session_state.county_assignments = assign_initial_territories(st.session_state.teams, counties_df)
+            st.session_state.trigger_replay = True
+            st.session_state.game_active = True
+            setup_ui_container.empty() # CLEAR THE BLOCK
+            save_game_state()
+            st.rerun()
 
-    st.markdown("---")
-    possible_paths = ["nfl_teams.csv", "inputs/nfl_teams.csv", "nfl.csv", "inputs/nfl.csv"]
-    valid_path = next((p for p in possible_paths if os.path.exists(p)), None)
+        st.markdown("---")
+        possible_paths = ["nfl_teams.csv", "inputs/nfl_teams.csv", "nfl.csv", "inputs/nfl.csv"]
+        valid_path = next((p for p in possible_paths if os.path.exists(p)), None)
 
-    if valid_path:
-        st.success(f"Default team list found: `{valid_path}`")
-    else:
-        st.warning("No default team CSV found. Please ensure `nfl_teams.csv` exists in the root or `inputs/` folder.")
+        if valid_path:
+            st.success(f"Default team list found: `{valid_path}`")
+        else:
+            st.warning("No default team CSV found. Please ensure `nfl_teams.csv` exists in the root or `inputs/` folder.")
 
-    if st.button("🚀 Start New NFL Imperialism", disabled=(valid_path is None)):
-        new_teams = [
-            {"name": r['Team'], "lat": r['Latitude'], "lon": r['Longitude'], "color": r.get('Color', "#%06x" % random.randint(0, 0xFFFFFF)), "active": True}
-            for _, r in pd.read_csv(valid_path).iterrows()
-        ]
-        st.session_state.teams = new_teams
-        st.session_state.county_assignments = assign_initial_territories(new_teams, counties_df)
-        st.session_state.battle_log = []
-        st.session_state.last_header_content = "<div class='replay-header'><h2>Initial Territories</h2></div>"
-        st.session_state.game_active = True
-        st.session_state.trigger_replay = False
-        st.session_state.is_replaying = False
+        if st.button("🚀 Start New NFL Imperialism", disabled=(valid_path is None)):
+            new_teams = [
+                {"name": r['Team'], "lat": r['Latitude'], "lon": r['Longitude'], "color": r.get('Color', "#%06x" % random.randint(0, 0xFFFFFF)), "active": True}
+                for _, r in pd.read_csv(valid_path).iterrows()
+            ]
+            st.session_state.teams = new_teams
+            st.session_state.county_assignments = assign_initial_territories(new_teams, counties_df)
+            st.session_state.battle_log = []
+            st.session_state.last_header_content = "<div class='replay-header'><h2>Initial Territories</h2></div>"
+            st.session_state.game_active = True
+            st.session_state.trigger_replay = False
+            st.session_state.is_replaying = False
+            setup_ui_container.empty() # CLEAR THE BLOCK
 
-        save_game_state()
-        st.rerun()
+            save_game_state()
+            st.rerun()
 
 if st.session_state.game_active:
+    setup_ui_container.empty() # Keep it cleared when game is active
+
     active_teams = [t for t in st.session_state.teams if t['active']]
     col_map, col_ctrl = st.columns([2.5, 1])
 
