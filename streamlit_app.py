@@ -32,11 +32,29 @@ st.set_page_config(page_title="Madden Imperialism Engine", layout="wide")
 # CSS for layout stability and polish
 st.markdown("""
     <style>
-    .reportview-container .main .block-container { padding-top: 1rem; }
+    /* Remove default Streamlit header bar space */
+    header[data-testid="stHeader"] {
+        z-index: 0;
+        height: 10px;
+    }
+
+    /* Tighten main container padding */
+    .block-container {
+        padding-top: 1rem !important;
+        padding-bottom: 0rem !important;
+        padding-left: 2rem !important;
+        padding-right: 2rem !important;
+    }
+
+    /* Reduce vertical gap between elements */
+    [data-testid="stVerticalBlock"] {
+        gap: 0.5rem !important;
+    }
 
     .header-container {
-        height: 150px;
-        margin-bottom: 10px;
+        height: 100px;
+        margin-top: 0px;
+        margin-bottom: 5px;
         display: flex;
         align-items: center;
         justify-content: center;
@@ -45,7 +63,7 @@ st.markdown("""
     .replay-header {
         background-color: #f8f9fa;
         color: #333;
-        padding: 15px;
+        padding: 10px;
         border-radius: 12px;
         text-align: center;
         width: 100%;
@@ -62,13 +80,14 @@ st.markdown("""
         margin: 0 8px;
         border: 1px solid rgba(0,0,0,0.1);
         color: white;
+        font-size: 0.9em;
     }
 
     .winner-status {
         font-weight: 800;
         text-transform: uppercase;
-        font-size: 1.1em;
-        margin-top: 8px;
+        font-size: 1.0em;
+        margin-top: 5px;
         letter-spacing: 1px;
     }
 
@@ -77,6 +96,7 @@ st.markdown("""
         font-style: italic;
         font-weight: bold;
         animation: blinker 0.2s linear infinite;
+        font-size: 0.9em;
     }
 
     @keyframes blinker {
@@ -200,7 +220,7 @@ def render_map(geojson, county_assignments, teams_list, highlight_teams=None):
 
     fig.update_layout(
         margin={"r":0,"t":0,"l":0,"b":0},
-        height=650,
+        height=400, # Optimized height to fit on screen with header
         uirevision='constant',
         geo=dict(
             scope='usa',
@@ -242,14 +262,14 @@ def format_battle_header(att, dfn, winner=None, label="BATTLE", spinning=False, 
         else:
             status_html = "<div class='spinning-text'>🎰 SPINNING...</div>"
     else:
-        status_html = "<div class='winner-status' style='color:#777; font-size: 0.9em;'>Awaiting Outcome...</div>"
+        status_html = "<div class='winner-status' style='color:#777; font-size: 0.8em;'>Awaiting Outcome...</div>"
 
     return f"""
         <div class='replay-header' style='{header_style}'>
-            <div style='font-size: 0.75em; opacity: 0.7; letter-spacing: 2px; font-weight: bold;'>{label}</div>
-            <div style='margin-top: 8px;'>
+            <div style='font-size: 0.65em; opacity: 0.7; letter-spacing: 2px; font-weight: bold;'>{label}</div>
+            <div style='margin-top: 4px;'>
                 <span class='vs-badge' style='background:{att_c};'>{att}</span>
-                <b style='font-size: 1.2em; margin: 0 5px;'>VS</b>
+                <b style='font-size: 1.1em; margin: 0 2px;'>VS</b>
                 <span class='vs-badge' style='background:{dfn_c};'>{dfn}</span>
             </div>
             {status_html}
@@ -341,7 +361,7 @@ if st.session_state.game_active:
     setup_ui_container.empty()
 
     active_teams = [t for t in st.session_state.teams if t['active']]
-    col_map, col_ctrl = st.columns([2.5, 1])
+    col_map, col_ctrl = st.columns([2.8, 1])
 
     with col_map:
         header_placeholder = st.empty()
