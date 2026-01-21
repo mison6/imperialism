@@ -43,14 +43,15 @@ st.markdown("""
     }
 
     .replay-header {
-        background-color: #1e1e1e;
-        color: white;
+        background-color: #f8f9fa;
+        color: #333;
         padding: 15px;
         border-radius: 12px;
         text-align: center;
         width: 100%;
-        border: 2px solid #444;
-        box-shadow: 0 4px 15px rgba(0,0,0,0.3);
+        border: 1px solid #ddd;
+        box-shadow: 0 2px 10px rgba(0,0,0,0.05);
+        transition: all 0.3s ease;
     }
 
     .vs-badge {
@@ -59,21 +60,22 @@ st.markdown("""
         border-radius: 6px;
         display: inline-block;
         margin: 0 8px;
-        border: 1px solid rgba(255,255,255,0.2);
+        border: 1px solid rgba(0,0,0,0.1);
         color: white;
     }
 
-    .winner-text {
-        color: #4CAF50;
-        font-weight: bold;
+    .winner-status {
+        font-weight: 800;
         text-transform: uppercase;
-        font-size: 0.9em;
-        margin-top: 5px;
+        font-size: 1.1em;
+        margin-top: 8px;
+        letter-spacing: 1px;
     }
 
     .spinning-text {
-        color: #ffcc00;
+        color: #d4a017;
         font-style: italic;
+        font-weight: bold;
         animation: blinker 0.2s linear infinite;
     }
 
@@ -224,24 +226,30 @@ def format_battle_header(att, dfn, winner=None, label="BATTLE", spinning=False, 
     att_c = next((t['color'] for t in st.session_state.teams if t['name'] == att), "#555")
     dfn_c = next((t['color'] for t in st.session_state.teams if t['name'] == dfn), "#555")
 
-    if spinning:
+    header_style = "background-color: #f8f9fa; color: #333;"
+    status_html = ""
+
+    if winner:
+        # Change the entire header background to the winner's color
+        win_c = att_c if winner == att else dfn_c
+        header_style = f"background-color: {win_c}; color: white; border: none; box-shadow: 0 4px 20px {win_c}66;"
+        status_html = f"<div class='winner-status'>🏆 {winner} WINS!</div>"
+    elif spinning:
         if spin_target == "ATTACKER":
             status_html = "<div class='spinning-text'>🎰 SELECTING ATTACKER...</div>"
         elif spin_target == "DEFENDER":
             status_html = "<div class='spinning-text'>🎰 SELECTING DEFENDER...</div>"
         else:
             status_html = "<div class='spinning-text'>🎰 SPINNING...</div>"
-    elif winner:
-        status_html = f"<div class='winner-text'>WINNER: {winner}</div>"
     else:
-        status_html = "<div class='winner-text' style='color:#aaa'>Waiting for result...</div>"
+        status_html = "<div class='winner-status' style='color:#777; font-size: 0.9em;'>Awaiting Outcome...</div>"
 
     return f"""
-        <div class='replay-header'>
-            <div style='font-size: 0.8em; opacity: 0.6; letter-spacing: 2px;'>{label}</div>
-            <div style='margin-top: 5px;'>
+        <div class='replay-header' style='{header_style}'>
+            <div style='font-size: 0.75em; opacity: 0.7; letter-spacing: 2px; font-weight: bold;'>{label}</div>
+            <div style='margin-top: 8px;'>
                 <span class='vs-badge' style='background:{att_c};'>{att}</span>
-                <b style='font-size: 1.2em;'>vs</b>
+                <b style='font-size: 1.2em; margin: 0 5px;'>VS</b>
                 <span class='vs-badge' style='background:{dfn_c};'>{dfn}</span>
             </div>
             {status_html}
@@ -258,7 +266,7 @@ active_battle = None
 if st.session_state.battle_log and st.session_state.battle_log[-1].get('winner') is None:
     active_battle = st.session_state.battle_log[-1]
 
-# Ensure header content matches current state (especially for pending matchups)
+# Ensure header content matches current state
 if active_battle and not st.session_state.is_replaying:
     st.session_state.last_header_content = format_battle_header(active_battle['att'], active_battle['def'])
 
@@ -278,7 +286,6 @@ with st.sidebar:
             use_container_width=True
         )
 
-        # Reset Button logic
         if st.button("🗑️ Clear Cache & Reset", use_container_width=True):
             if os.path.exists(AUTOSAVE_FILE):
                 os.remove(AUTOSAVE_FILE)
@@ -286,7 +293,6 @@ with st.sidebar:
                 del st.session_state[key]
             st.rerun()
 
-# PERSISTENT SETUP CONTAINER
 setup_ui_container = st.empty()
 
 if not st.session_state.game_active:
@@ -302,7 +308,7 @@ if not st.session_state.game_active:
             st.session_state.county_assignments = assign_initial_territories(st.session_state.teams, counties_df)
             st.session_state.trigger_replay = True
             st.session_state.game_active = True
-            setup_ui_container.empty() # CLEAR THE BLOCK
+            setup_ui_container.empty()
             save_game_state()
             st.rerun()
 
@@ -313,7 +319,7 @@ if not st.session_state.game_active:
         if valid_path:
             st.success(f"Default team list found: `{valid_path}`")
         else:
-            st.warning("No default team CSV found. Please ensure `nfl_teams.csv` exists in the root or `inputs/` folder.")
+            st.warning("No default team CSV found. Please ensure `nfl_teams.csv` exists.")
 
         if st.button("🚀 Start New NFL Imperialism", disabled=(valid_path is None)):
             new_teams = [
@@ -327,13 +333,12 @@ if not st.session_state.game_active:
             st.session_state.game_active = True
             st.session_state.trigger_replay = False
             st.session_state.is_replaying = False
-            setup_ui_container.empty() # CLEAR THE BLOCK
-
+            setup_ui_container.empty()
             save_game_state()
             st.rerun()
 
 if st.session_state.game_active:
-    setup_ui_container.empty() # Keep it cleared when game is active
+    setup_ui_container.empty()
 
     active_teams = [t for t in st.session_state.teams if t['active']]
     col_map, col_ctrl = st.columns([2.5, 1])
@@ -358,7 +363,6 @@ if st.session_state.game_active:
             st.session_state.is_replaying = True
             cur_map = assign_initial_territories(st.session_state.teams, counties_df)
 
-            # SHOW INITIAL STATE
             header_placeholder.markdown("<div class='header-container'><div class='replay-header'><h2>Initial Territories</h2></div></div>", unsafe_allow_html=True)
             map_placeholder.plotly_chart(render_map(geojson, cur_map, st.session_state.teams), use_container_width=True, key="replay_start")
             time.sleep(2.0)
@@ -368,34 +372,30 @@ if st.session_state.game_active:
                 att, dfn, win = battle['att'], battle['def'], battle['winner']
                 loser = dfn if win == att else att
 
-                # --- STEP 1: MATCHUP PHASE ---
-                # 1. Pre-calculate the figure so it's ready for immediate transmission
+                # MATCHUP PHASE
                 matchup_fig = render_map(geojson, cur_map, st.session_state.teams, [att, dfn])
                 current_header = format_battle_header(att, dfn, label=f'BATTLE {i+1}')
 
-                # 2. Update Map FIRST (since it's the slower element to render)
                 map_placeholder.plotly_chart(matchup_fig, use_container_width=True, key=f"replay_m_{i}", config={'displayModeBar': False})
-                # 3. Update Header IMMEDIATELY after
                 header_placeholder.markdown(f"<div class='header-container'>{current_header}</div>", unsafe_allow_html=True)
-
                 time.sleep(1.2)
 
-                # --- STEP 2: WINNER PHASE ---
-                # 1. Calculate next state
+                # WINNER PHASE
                 cur_map = {f: (win if o == loser else o) for f, o in cur_map.items()}
                 winner_fig = render_map(geojson, cur_map, st.session_state.teams, [att, dfn])
                 winner_header = format_battle_header(att, dfn, win, label=f'BATTLE {i+1}')
 
-                # 2. Update Map FIRST
                 map_placeholder.plotly_chart(winner_fig, use_container_width=True, key=f"replay_w_{i}", config={'displayModeBar': False})
-                # 3. Update Header IMMEDIATELY after
                 header_placeholder.markdown(f"<div class='header-container'>{winner_header}</div>", unsafe_allow_html=True)
 
                 if i == len(completed_battles) - 1:
                     st.session_state.last_header_content = winner_header
 
+                # REPLAY TIMING FIX: Always sleep after the winner phase, even for the last battle.
                 time.sleep(1.0)
 
+            # Final persistence pause to ensure the last battle result is seen
+            time.sleep(1.0)
             st.session_state.county_assignments = cur_map
             st.session_state.is_replaying = False
             save_game_state()
@@ -403,7 +403,6 @@ if st.session_state.game_active:
 
         st.divider()
 
-        # --- BATTLE INTERFACE ---
         if active_battle:
             st.markdown(f"**Current Matchup:** {active_battle['att']} vs {active_battle['def']}")
             winner = st.selectbox("Select Winner", [active_battle['att'], active_battle['def']])
@@ -442,6 +441,5 @@ if st.session_state.game_active:
                     save_game_state()
                     st.rerun()
 
-    # Footer
     st.markdown("---")
     st.caption(f"Unlocking potential once the sludge/friction/sand in the gears is removed. | Active: {len(active_teams)} teams")
