@@ -12,6 +12,8 @@ from scipy.spatial import KDTree
 # --- CONFIG & SETUP ---
 st.set_page_config(page_title="Madden Imperialism Engine", layout="wide")
 
+AUTOSAVE_FILE = ".imperialism_autosave.json"
+
 # CSS for layout stability and polish
 st.markdown("""
     <style>
@@ -72,24 +74,55 @@ CENSUS_CENTER_URL = "https://www2.census.gov/geo/docs/reference/cenpop2020/count
 ADJACENCY_URL = "https://www2.census.gov/geo/docs/reference/county_adjacency.txt"
 
 # --- STATE INITIALIZATION ---
-if 'game_active' not in st.session_state:
-    st.session_state.game_active = False
-if 'teams' not in st.session_state:
-    st.session_state.teams = []
-if 'county_assignments' not in st.session_state:
-    st.session_state.county_assignments = {}
-if 'adjacencies' not in st.session_state:
-    st.session_state.adjacencies = {}
-if 'battle_log' not in st.session_state:
-    st.session_state.battle_log = []
-if 'is_replaying' not in st.session_state:
-    st.session_state.is_replaying = False
-if 'trigger_replay' not in st.session_state:
-    st.session_state.trigger_replay = False
-if 'last_header_content' not in st.session_state:
-    st.session_state.last_header_content = "<div class='replay-header'><h2>Welcome to Imperialism</h2></div>"
+def init_state():
+    if 'game_active' not in st.session_state:
+        st.session_state.game_active = False
+    if 'teams' not in st.session_state:
+        st.session_state.teams = []
+    if 'county_assignments' not in st.session_state:
+        st.session_state.county_assignments = {}
+    if 'adjacencies' not in st.session_state:
+        st.session_state.adjacencies = {}
+    if 'battle_log' not in st.session_state:
+        st.session_state.battle_log = []
+    if 'is_replaying' not in st.session_state:
+        st.session_state.is_replaying = False
+    if 'trigger_replay' not in st.session_state:
+        st.session_state.trigger_replay = False
+    if 'last_header_content' not in st.session_state:
+        st.session_state.last_header_content = "<div class='replay-header'><h2>Welcome to Imperialism</h2></div>"
 
-# --- DATA LOADING ---
+init_state()
+
+# --- HELPER FUNCTIONS ---
+def save_game_state():
+    """Serializes current state to a local JSON file."""
+    state = {
+        "teams": st.session_state.teams,
+        "county_assignments": st.session_state.county_assignments,
+        "battle_log": st.session_state.battle_log,
+        "last_header_content": st.session_state.last_header_content,
+        "game_active": st.session_state.game_active
+    }
+    with open(AUTOSAVE_FILE, "w") as f:
+        json.dump(state, f)
+
+def load_autosave():
+    """Loads state from the local JSON file."""
+    if os.path.exists(AUTOSAVE_FILE):
+        try:
+            with open(AUTOSAVE_FILE, "r") as f:
+                data = json.load(f)
+                st.session_state.teams = data.get("teams", [])
+                st.session_state.county_assignments = data.get("county_assignments", {})
+                st.session_state.battle_log = data.get("battle_log", [])
+                st.session_state.last_header_content = data.get("last_header_content", "")
+                st.session_state.game_active = data.get("game_active", False)
+                return True
+        except:
+            return False
+    return False
+
 @st.cache_data
 def load_map_resources():
     try:
@@ -146,12 +179,11 @@ def render_map(geojson, county_assignments, teams_list, highlight_teams=None):
         scale_val = i / (max(1, len(teams_list) - 1)) if len(teams_list) > 1 else 0
         base_color = t['color']
 
-        # Apply transparency to non-highlighted teams
         if highlight_teams:
             if t['name'] in highlight_teams:
                 color = hex_to_rgba(base_color, 1.0)
             else:
-                color = hex_to_rgba(base_color, 0.1)
+                color = hex_to_rgba(base_color, 0.15)
         else:
             color = hex_to_rgba(base_color, 1.0)
 
@@ -220,6 +252,23 @@ def format_battle_header(att, dfn, winner=None, label="BATTLE", spinning=False, 
         </div>
     """
 
+# --- AUTO-LOAD ON STARTUP ---
+geojson, counties_df, adj_dict = load_map_resources()
+if adj_dict:
+    st.session_state.adjacencies = adj_dict
+
+if not st.session_state.game_active:
+    load_autosave()
+
+# Check for active battle in the history log
+active_battle = None
+if st.session_state.battle_log and st.session_state.battle_log[-1].get('winner') is None:
+    active_battle = st.session_state.battle_log[-1]
+
+# Ensure header content matches current state (especially for pending matchups)
+if active_battle and not st.session_state.is_replaying:
+    st.session_state.last_header_content = format_battle_header(active_battle['att'], active_battle['def'])
+
 # --- MAIN INTERFACE ---
 with st.sidebar:
     st.header("⚙️ Game Controls")
@@ -229,47 +278,65 @@ with st.sidebar:
             "history": st.session_state.battle_log
         }
         st.download_button(
-            "💾 Download JSON Save",
+            "💾 Save Map",
             data=json.dumps(save_data, indent=2),
             file_name="madden_imperialism_save.json",
             mime="application/json",
             use_container_width=True
         )
-        if st.button("🔄 Reset All", use_container_width=True):
-            st.session_state.clear()
+
+        # Fixed Reset Button logic
+        if st.button("🗑️ Clear Cache & Reset", use_container_width=True):
+            if os.path.exists(AUTOSAVE_FILE):
+                os.remove(AUTOSAVE_FILE)
+            for key in list(st.session_state.keys()):
+                del st.session_state[key]
             st.rerun()
 
 if not st.session_state.game_active:
     st.title("🏟️ Madden Imperialism Engine")
-    uploaded_file = st.file_uploader("📂 Load JSON Save", type=["json"])
+    st.info("No active game found. Start a new one or upload a save.")
+
+    uploaded_file = st.file_uploader("📂 Upload Save File", type=["json"])
     if uploaded_file:
         data = json.load(uploaded_file)
-        geojson, counties_df, adj_dict = load_map_resources()
         st.session_state.teams = data["teams"]
         st.session_state.battle_log = data.get("history", [])
-        st.session_state.adjacencies = adj_dict
+        st.session_state.county_assignments = assign_initial_territories(st.session_state.teams, counties_df)
         st.session_state.trigger_replay = True
         st.session_state.game_active = True
+        save_game_state()
         st.rerun()
 
-    if st.button("🚀 New NFL Game"):
-        geojson, counties_df, adj_dict = load_map_resources()
-        path = "nfl_teams.csv"
-        if os.path.exists(path):
-            st.session_state.teams = [
-                {"name": r['Team'], "lat": r['Latitude'], "lon": r['Longitude'], "color": r.get('Color', "#%06x" % random.randint(0, 0xFFFFFF)), "active": True}
-                for _, r in pd.read_csv(path).iterrows()
-            ]
-            st.session_state.adjacencies = adj_dict
-            st.session_state.county_assignments = assign_initial_territories(st.session_state.teams, counties_df)
-            st.session_state.battle_log = []
-            st.session_state.game_active = True
-            st.rerun()
+    st.markdown("---")
+    # Improved team loading logic
+    possible_paths = ["nfl_teams.csv", "inputs/nfl_teams.csv", "nfl.csv", "inputs/nfl.csv"]
+    valid_path = next((p for p in possible_paths if os.path.exists(p)), None)
+
+    if valid_path:
+        st.success(f"Default team list found: `{valid_path}`")
+    else:
+        st.warning("No default team CSV found. Please ensure `nfl_teams.csv` exists in the root or `inputs/` folder.")
+
+    if st.button("🚀 Start New NFL Imperialism", disabled=(valid_path is None)):
+        # Reset all relevant states to a fresh baseline
+        new_teams = [
+            {"name": r['Team'], "lat": r['Latitude'], "lon": r['Longitude'], "color": r.get('Color', "#%06x" % random.randint(0, 0xFFFFFF)), "active": True}
+            for _, r in pd.read_csv(valid_path).iterrows()
+        ]
+        st.session_state.teams = new_teams
+        st.session_state.county_assignments = assign_initial_territories(new_teams, counties_df)
+        st.session_state.battle_log = []
+        st.session_state.last_header_content = "<div class='replay-header'><h2>Initial Territories</h2></div>"
+        st.session_state.game_active = True
+        st.session_state.trigger_replay = False
+        st.session_state.is_replaying = False
+
+        save_game_state()
+        st.rerun()
 
 if st.session_state.game_active:
-    geojson, counties_df, _ = load_map_resources()
     active_teams = [t for t in st.session_state.teams if t['active']]
-
     col_map, col_ctrl = st.columns([2.5, 1])
 
     with col_map:
@@ -278,11 +345,7 @@ if st.session_state.game_active:
 
         if not st.session_state.is_replaying:
             header_placeholder.markdown(f"<div class='header-container'>{st.session_state.last_header_content}</div>", unsafe_allow_html=True)
-            # Check if a battle is current to apply highlight
-            current_highlight = None
-            if 'current_battle' in st.session_state:
-                current_highlight = [st.session_state.current_battle['att'], st.session_state.current_battle['def']]
-
+            current_highlight = [active_battle['att'], active_battle['def']] if active_battle else None
             map_placeholder.plotly_chart(
                 render_map(geojson, st.session_state.county_assignments, st.session_state.teams, highlight_teams=current_highlight),
                 use_container_width=True, key="main_map"
@@ -291,84 +354,89 @@ if st.session_state.game_active:
     with col_ctrl:
         st.subheader("⚔️ Actions")
 
-        # --- REPLAY LOGIC ---
         if st.button("⏪ Replay All Battles", disabled=st.session_state.is_replaying) or st.session_state.trigger_replay:
             st.session_state.trigger_replay = False
             st.session_state.is_replaying = True
             cur_map = assign_initial_territories(st.session_state.teams, counties_df)
 
-            final_header = st.session_state.last_header_content
+            # SHOW INITIAL STATE FIRST
+            header_placeholder.markdown("<div class='header-container'><div class='replay-header'><h2>Initial Territories</h2></div></div>", unsafe_allow_html=True)
+            map_placeholder.plotly_chart(render_map(geojson, cur_map, st.session_state.teams), use_container_width=True, key="replay_start")
+            time.sleep(2.0)
 
-            for i, battle in enumerate(st.session_state.battle_log):
+            # Check for a pending battle to restore the header to after replay
+            pending_battle = next((b for b in st.session_state.battle_log if b.get('winner') is None), None)
+            if pending_battle:
+                st.session_state.last_header_content = format_battle_header(pending_battle['att'], pending_battle['def'])
+            else:
+                st.session_state.last_header_content = "<div class='replay-header'><h2>Current Map</h2></div>"
+
+            # Replay only completed battles
+            completed_battles = [b for b in st.session_state.battle_log if b.get('winner')]
+            for i, battle in enumerate(completed_battles):
                 att, dfn, win = battle['att'], battle['def'], battle['winner']
                 loser = dfn if win == att else att
-
-                # Format current battle header
                 current_header = format_battle_header(att, dfn, win, label=f'BATTLE {i+1}')
                 header_placeholder.markdown(f"<div class='header-container'>{current_header}</div>", unsafe_allow_html=True)
 
-                # If this is the last battle in the log, save it as the persistent header
-                if i == len(st.session_state.battle_log) - 1:
-                    final_header = current_header
+                # If there's no pending battle, the last completed battle's result becomes the final header
+                if not pending_battle and i == len(completed_battles) - 1:
+                    st.session_state.last_header_content = current_header
 
                 map_placeholder.plotly_chart(render_map(geojson, cur_map, st.session_state.teams, [att, dfn]), use_container_width=True, key=f"replay_h_{i}")
-                time.sleep(1.2)
-
+                time.sleep(1.0)
                 cur_map = {f: (win if o == loser else o) for f, o in cur_map.items()}
                 map_placeholder.plotly_chart(render_map(geojson, cur_map, st.session_state.teams, [att, dfn]), use_container_width=True, key=f"replay_a_{i}")
                 time.sleep(0.8)
 
             st.session_state.county_assignments = cur_map
-            st.session_state.last_header_content = final_header
             st.session_state.is_replaying = False
+            save_game_state()
             st.rerun()
 
         st.divider()
 
-        # --- TWO-STAGE SPIN LOGIC ---
-        if st.button("🎰 SPIN FOR NEXT BATTLE", use_container_width=True, type="primary", disabled=st.session_state.is_replaying):
-            viable_attackers = [t for t in active_teams if get_neighbors(t['name'])]
-
-            if viable_attackers:
-                # Stage 1: Spin for Attacker
-                attacker_name = "?"
-                for i in range(15):
-                    temp_att = random.choice(viable_attackers)
-                    header_placeholder.markdown(f"<div class='header-container'>{format_battle_header(temp_att['name'], '?', spinning=True, spin_target='ATTACKER')}</div>", unsafe_allow_html=True)
-                    time.sleep(0.08)
-
-                final_attacker = random.choice(viable_attackers)
-                attacker_name = final_attacker['name']
-
-                # Stage 2: Spin for Defender (from valid neighbors)
-                valid_neighbors = get_neighbors(attacker_name)
-                defender_name = "?"
-
-                for i in range(15):
-                    temp_dfn = random.choice(valid_neighbors)
-                    header_placeholder.markdown(f"<div class='header-container'>{format_battle_header(attacker_name, temp_dfn, spinning=True, spin_target='DEFENDER')}</div>", unsafe_allow_html=True)
-                    time.sleep(0.08)
-
-                final_defender = random.choice(valid_neighbors)
-                defender_name = final_defender
-
-                st.session_state.current_battle = {"att": attacker_name, "def": defender_name}
-                st.session_state.last_header_content = format_battle_header(attacker_name, defender_name)
-                st.rerun()
-
-        if 'current_battle' in st.session_state:
-            b = st.session_state.current_battle
-            winner = st.selectbox("Who won in Madden?", [b['att'], b['def']])
+        # --- BATTLE INTERFACE ---
+        if active_battle:
+            st.markdown(f"**Current Matchup:** {active_battle['att']} vs {active_battle['def']}")
+            winner = st.selectbox("Select Winner", [active_battle['att'], active_battle['def']])
             if st.button("Confirm Result", use_container_width=True):
-                loser = b['def'] if winner == b['att'] else b['att']
-                st.session_state.battle_log.append({"att": b['att'], "def": b['def'], "winner": winner})
+                # Update the log entry
+                st.session_state.battle_log[-1]['winner'] = winner
+                loser = active_battle['def'] if winner == active_battle['att'] else active_battle['att']
+
+                # Update territories
                 st.session_state.county_assignments = {f: (winner if o == loser else o) for f, o in st.session_state.county_assignments.items()}
                 for t in st.session_state.teams:
                     t['active'] = t['name'] in set(st.session_state.county_assignments.values())
 
-                st.session_state.last_header_content = format_battle_header(b['att'], b['def'], winner)
-                del st.session_state.current_battle
+                st.session_state.last_header_content = format_battle_header(active_battle['att'], active_battle['def'], winner)
+                save_game_state()
                 st.rerun()
+        else:
+            if st.button("🎰 SPIN FOR NEXT BATTLE", use_container_width=True, type="primary", disabled=st.session_state.is_replaying):
+                viable_attackers = [t for t in active_teams if get_neighbors(t['name'])]
+                if viable_attackers:
+                    for i in range(12):
+                        temp_att = random.choice(viable_attackers)
+                        header_placeholder.markdown(f"<div class='header-container'>{format_battle_header(temp_att['name'], '?', spinning=True, spin_target='ATTACKER')}</div>", unsafe_allow_html=True)
+                        time.sleep(0.1)
+
+                    final_attacker = random.choice(viable_attackers)['name']
+                    valid_neighbors = get_neighbors(final_attacker)
+
+                    for i in range(10):
+                        temp_dfn = random.choice(valid_neighbors)
+                        header_placeholder.markdown(f"<div class='header-container'>{format_battle_header(final_attacker, temp_dfn, spinning=True, spin_target='DEFENDER')}</div>", unsafe_allow_html=True)
+                        time.sleep(0.1)
+
+                    final_defender = random.choice(valid_neighbors)
+
+                    # Store the new battle in history with winner as None
+                    st.session_state.battle_log.append({"att": final_attacker, "def": final_defender, "winner": None})
+                    st.session_state.last_header_content = format_battle_header(final_attacker, final_defender)
+                    save_game_state()
+                    st.rerun()
 
     # Footer
     st.markdown("---")
