@@ -423,7 +423,7 @@ if st.session_state.game_active:
 
         if active_battle:
             st.markdown(f"**Current Matchup:** {active_battle['att']} vs {active_battle['def']}")
-            winner = st.selectbox("Select Winner", [active_battle['att'], active_battle['def']])
+            winner = st.radio("Select Winner", [active_battle['att'], active_battle['def']])
             if st.button("Confirm Result", use_container_width=True):
                 st.session_state.battle_log[-1]['winner'] = winner
                 loser = active_battle['def'] if winner == active_battle['att'] else active_battle['att']
