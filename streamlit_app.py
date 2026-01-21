@@ -9,10 +9,25 @@ from urllib.request import urlopen, Request
 import plotly.graph_objects as go
 from scipy.spatial import KDTree
 
+# --- 1. CRITICAL: PRE-FLIGHT DATA RECOVERY (Anti-Flicker Fix) ---
+# Check for existing game state BEFORE any UI logic runs to prevent the "No Game Found" flicker.
+AUTOSAVE_FILE = ".imperialism_autosave.json"
+
+def load_autosave_silent():
+    if os.path.exists(AUTOSAVE_FILE):
+        try:
+            with open(AUTOSAVE_FILE, "r") as f:
+                data = json.load(f)
+                for k, v in data.items():
+                    if k not in st.session_state:
+                        st.session_state[k] = v
+        except:
+            pass
+
+load_autosave_silent()
+
 # --- CONFIG & SETUP ---
 st.set_page_config(page_title="Madden Imperialism Engine", layout="wide")
-
-AUTOSAVE_FILE = ".imperialism_autosave.json"
 
 # CSS for layout stability and polish
 st.markdown("""
@@ -75,22 +90,19 @@ ADJACENCY_URL = "https://www2.census.gov/geo/docs/reference/county_adjacency.txt
 
 # --- STATE INITIALIZATION ---
 def init_state():
-    if 'game_active' not in st.session_state:
-        st.session_state.game_active = False
-    if 'teams' not in st.session_state:
-        st.session_state.teams = []
-    if 'county_assignments' not in st.session_state:
-        st.session_state.county_assignments = {}
-    if 'adjacencies' not in st.session_state:
-        st.session_state.adjacencies = {}
-    if 'battle_log' not in st.session_state:
-        st.session_state.battle_log = []
-    if 'is_replaying' not in st.session_state:
-        st.session_state.is_replaying = False
-    if 'trigger_replay' not in st.session_state:
-        st.session_state.trigger_replay = False
-    if 'last_header_content' not in st.session_state:
-        st.session_state.last_header_content = "<div class='replay-header'><h2>Welcome to Imperialism</h2></div>"
+    defaults = {
+        'game_active': False,
+        'teams': [],
+        'county_assignments': {},
+        'adjacencies': {},
+        'battle_log': [],
+        'is_replaying': False,
+        'trigger_replay': False,
+        'last_header_content': "<div class='replay-header'><h2>Welcome to Imperialism</h2></div>"
+    }
+    for key, val in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = val
 
 init_state()
 
@@ -106,22 +118,6 @@ def save_game_state():
     }
     with open(AUTOSAVE_FILE, "w") as f:
         json.dump(state, f)
-
-def load_autosave():
-    """Loads state from the local JSON file."""
-    if os.path.exists(AUTOSAVE_FILE):
-        try:
-            with open(AUTOSAVE_FILE, "r") as f:
-                data = json.load(f)
-                st.session_state.teams = data.get("teams", [])
-                st.session_state.county_assignments = data.get("county_assignments", {})
-                st.session_state.battle_log = data.get("battle_log", [])
-                st.session_state.last_header_content = data.get("last_header_content", "")
-                st.session_state.game_active = data.get("game_active", False)
-                return True
-        except:
-            return False
-    return False
 
 @st.cache_data
 def load_map_resources():
@@ -257,9 +253,6 @@ geojson, counties_df, adj_dict = load_map_resources()
 if adj_dict:
     st.session_state.adjacencies = adj_dict
 
-if not st.session_state.game_active:
-    load_autosave()
-
 # Check for active battle in the history log
 active_battle = None
 if st.session_state.battle_log and st.session_state.battle_log[-1].get('winner') is None:
@@ -285,7 +278,7 @@ with st.sidebar:
             use_container_width=True
         )
 
-        # Fixed Reset Button logic
+        # Reset Button logic
         if st.button("🗑️ Clear Cache & Reset", use_container_width=True):
             if os.path.exists(AUTOSAVE_FILE):
                 os.remove(AUTOSAVE_FILE)
@@ -309,7 +302,6 @@ if not st.session_state.game_active:
         st.rerun()
 
     st.markdown("---")
-    # Improved team loading logic
     possible_paths = ["nfl_teams.csv", "inputs/nfl_teams.csv", "nfl.csv", "inputs/nfl.csv"]
     valid_path = next((p for p in possible_paths if os.path.exists(p)), None)
 
@@ -319,7 +311,6 @@ if not st.session_state.game_active:
         st.warning("No default team CSV found. Please ensure `nfl_teams.csv` exists in the root or `inputs/` folder.")
 
     if st.button("🚀 Start New NFL Imperialism", disabled=(valid_path is None)):
-        # Reset all relevant states to a fresh baseline
         new_teams = [
             {"name": r['Team'], "lat": r['Latitude'], "lon": r['Longitude'], "color": r.get('Color', "#%06x" % random.randint(0, 0xFFFFFF)), "active": True}
             for _, r in pd.read_csv(valid_path).iterrows()
@@ -360,11 +351,11 @@ if st.session_state.game_active:
             cur_map = assign_initial_territories(st.session_state.teams, counties_df)
 
             # SHOW INITIAL STATE FIRST
-            header_placeholder.markdown("<div class='header-container'><div class='replay-header'><h2>Initial Territories</h2></div></div>", unsafe_allow_html=True)
             map_placeholder.plotly_chart(render_map(geojson, cur_map, st.session_state.teams), use_container_width=True, key="replay_start")
-            time.sleep(2.0)
+            time.sleep(0.4)
+            header_placeholder.markdown("<div class='header-container'><div class='replay-header'><h2>Initial Territories</h2></div></div>", unsafe_allow_html=True)
+            time.sleep(1.5)
 
-            # Check for a pending battle to restore the header to after replay
             pending_battle = next((b for b in st.session_state.battle_log if b.get('winner') is None), None)
             if pending_battle:
                 st.session_state.last_header_content = format_battle_header(pending_battle['att'], pending_battle['def'])
@@ -376,16 +367,22 @@ if st.session_state.game_active:
             for i, battle in enumerate(completed_battles):
                 att, dfn, win = battle['att'], battle['def'], battle['winner']
                 loser = dfn if win == att else att
+
+                # --- 2. THE HANDSHAKE SYNC ---
+                # Draw Map first to give the heavy Plotly object time to init
+                map_placeholder.plotly_chart(render_map(geojson, cur_map, st.session_state.teams, [att, dfn]), use_container_width=True, key=f"replay_h_{i}")
+                time.sleep(0.4)
+                # Now show banner
                 current_header = format_battle_header(att, dfn, win, label=f'BATTLE {i+1}')
                 header_placeholder.markdown(f"<div class='header-container'>{current_header}</div>", unsafe_allow_html=True)
 
-                # If there's no pending battle, the last completed battle's result becomes the final header
                 if not pending_battle and i == len(completed_battles) - 1:
                     st.session_state.last_header_content = current_header
 
-                map_placeholder.plotly_chart(render_map(geojson, cur_map, st.session_state.teams, [att, dfn]), use_container_width=True, key=f"replay_h_{i}")
                 time.sleep(1.0)
                 cur_map = {f: (win if o == loser else o) for f, o in cur_map.items()}
+
+                # Update map with new owner
                 map_placeholder.plotly_chart(render_map(geojson, cur_map, st.session_state.teams, [att, dfn]), use_container_width=True, key=f"replay_a_{i}")
                 time.sleep(0.8)
 
@@ -401,11 +398,9 @@ if st.session_state.game_active:
             st.markdown(f"**Current Matchup:** {active_battle['att']} vs {active_battle['def']}")
             winner = st.selectbox("Select Winner", [active_battle['att'], active_battle['def']])
             if st.button("Confirm Result", use_container_width=True):
-                # Update the log entry
                 st.session_state.battle_log[-1]['winner'] = winner
                 loser = active_battle['def'] if winner == active_battle['att'] else active_battle['att']
 
-                # Update territories
                 st.session_state.county_assignments = {f: (winner if o == loser else o) for f, o in st.session_state.county_assignments.items()}
                 for t in st.session_state.teams:
                     t['active'] = t['name'] in set(st.session_state.county_assignments.values())
@@ -432,7 +427,6 @@ if st.session_state.game_active:
 
                     final_defender = random.choice(valid_neighbors)
 
-                    # Store the new battle in history with winner as None
                     st.session_state.battle_log.append({"att": final_attacker, "def": final_defender, "winner": None})
                     st.session_state.last_header_content = format_battle_header(final_attacker, final_defender)
                     save_game_state()
