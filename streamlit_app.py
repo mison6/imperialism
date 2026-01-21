@@ -144,9 +144,9 @@ def save_game_state():
 @st.cache_data
 def load_map_resources():
     try:
-        req = Request(COUNTY_GEOJSON_URL, headers={'User-Agent': 'Mozilla/5.0'})
-        with urlopen(req) as response:
-            geojson = json.load(response)
+        # OPTIMIZATION: Return the URL string instead of loading the massive JSON object.
+        # This allows Plotly.js (on the iPad) to fetch and cache it directly.
+        geojson_ref = COUNTY_GEOJSON_URL
 
         df = pd.read_csv(CENSUS_CENTER_URL, dtype={'STATEFP': str, 'COUNTYFP': str})
         df['fips'] = df['STATEFP'].str.zfill(2) + df['COUNTYFP'].str.zfill(3)
@@ -166,7 +166,7 @@ def load_map_resources():
                 neighbor_fips = parts[3].strip().zfill(5)
                 if current_county and neighbor_fips != current_county:
                     adj_dict[current_county].append(neighbor_fips)
-        return geojson, counties_df.dropna(), adj_dict
+        return geojson_ref, counties_df.dropna(), adj_dict
     except Exception as e:
         st.error(f"Failed to load resources: {e}")
         return None, None, None
@@ -208,7 +208,7 @@ def render_map(geojson, county_assignments, teams_list, highlight_teams=None):
         colorscale.append([scale_val, color])
 
     fig = go.Figure(go.Choropleth(
-        geojson=geojson,
+        geojson=geojson, # Now passing the URL string directly
         locations=fips_list,
         z=z_vals,
         colorscale=colorscale,
@@ -252,7 +252,7 @@ def format_battle_header(att, dfn, winner=None, label="BATTLE", spinning=False, 
     if winner:
         # Change the entire header background to the winner's color
         win_c = att_c if winner == att else dfn_c
-        header_style = f"background-color: {win_c}; color: white; border: none; box-shadow: 0 4px 20px {win_c}66;"
+        header_style = f"background-color: {win_c}; color: white; border: none;"
         status_html = f"<div class='winner-status'>🏆 {winner} WINS!</div>"
     elif spinning:
         if spin_target == "ATTACKER":
@@ -266,10 +266,10 @@ def format_battle_header(att, dfn, winner=None, label="BATTLE", spinning=False, 
 
     return f"""
         <div class='replay-header' style='{header_style}'>
-            <div style='font-size: 0.65em; opacity: 0.7; letter-spacing: 2px; font-weight: bold;'>{label}</div>
-            <div style='margin-top: 4px;'>
+            <div style='font-size: 0.6em; opacity: 0.7; letter-spacing: 1px;'>{label}</div>
+            <div style='margin-top: 2px;'>
                 <span class='vs-badge' style='background:{att_c};'>{att}</span>
-                <b style='font-size: 1.1em; margin: 0 2px;'>VS</b>
+                <b style='font-size: 1.0em;'>-</b>
                 <span class='vs-badge' style='background:{dfn_c};'>{dfn}</span>
             </div>
             {status_html}
@@ -411,10 +411,8 @@ if st.session_state.game_active:
                 if i == len(completed_battles) - 1:
                     st.session_state.last_header_content = winner_header
 
-                # REPLAY TIMING FIX: Always sleep after the winner phase, even for the last battle.
                 time.sleep(1.0)
 
-            # Final persistence pause to ensure the last battle result is seen
             time.sleep(1.0)
             st.session_state.county_assignments = cur_map
             st.session_state.is_replaying = False
@@ -461,5 +459,6 @@ if st.session_state.game_active:
                     save_game_state()
                     st.rerun()
 
+    # Footer stays at the bottom of the column setup
     st.markdown("---")
     st.caption(f"Unlocking potential once the sludge/friction/sand in the gears is removed. | Active: {len(active_teams)} teams")
