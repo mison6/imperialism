@@ -347,7 +347,7 @@ if st.session_state.game_active:
             current_highlight = [active_battle['att'], active_battle['def']] if active_battle else None
             map_placeholder.plotly_chart(
                 render_map(geojson, st.session_state.county_assignments, st.session_state.teams, highlight_teams=current_highlight),
-                use_container_width=True, key="main_map"
+                use_container_width=True, key="main_map", config={'displayModeBar': False}
             )
 
     with col_ctrl:
@@ -358,41 +358,43 @@ if st.session_state.game_active:
             st.session_state.is_replaying = True
             cur_map = assign_initial_territories(st.session_state.teams, counties_df)
 
-            # SHOW INITIAL STATE FIRST
-            map_placeholder.plotly_chart(render_map(geojson, cur_map, st.session_state.teams), use_container_width=True, key="replay_start")
-            time.sleep(0.4)
+            # SHOW INITIAL STATE
             header_placeholder.markdown("<div class='header-container'><div class='replay-header'><h2>Initial Territories</h2></div></div>", unsafe_allow_html=True)
-            time.sleep(1.5)
+            map_placeholder.plotly_chart(render_map(geojson, cur_map, st.session_state.teams), use_container_width=True, key="replay_start")
+            time.sleep(2.0)
 
-            pending_battle = next((b for b in st.session_state.battle_log if b.get('winner') is None), None)
-            if pending_battle:
-                st.session_state.last_header_content = format_battle_header(pending_battle['att'], pending_battle['def'])
-            else:
-                st.session_state.last_header_content = "<div class='replay-header'><h2>Current Map</h2></div>"
-
-            # Replay only completed battles
             completed_battles = [b for b in st.session_state.battle_log if b.get('winner')]
             for i, battle in enumerate(completed_battles):
                 att, dfn, win = battle['att'], battle['def'], battle['winner']
                 loser = dfn if win == att else att
 
-                # --- 2. THE HANDSHAKE SYNC ---
-                # Draw Map first to give the heavy Plotly object time to init
-                map_placeholder.plotly_chart(render_map(geojson, cur_map, st.session_state.teams, [att, dfn]), use_container_width=True, key=f"replay_h_{i}")
-                time.sleep(0.4)
-                # Now show banner
-                current_header = format_battle_header(att, dfn, win, label=f'BATTLE {i+1}')
+                # --- STEP 1: MATCHUP PHASE ---
+                # 1. Pre-calculate the figure so it's ready for immediate transmission
+                matchup_fig = render_map(geojson, cur_map, st.session_state.teams, [att, dfn])
+                current_header = format_battle_header(att, dfn, label=f'BATTLE {i+1}')
+
+                # 2. Update Map FIRST (since it's the slower element to render)
+                map_placeholder.plotly_chart(matchup_fig, use_container_width=True, key=f"replay_m_{i}", config={'displayModeBar': False})
+                # 3. Update Header IMMEDIATELY after
                 header_placeholder.markdown(f"<div class='header-container'>{current_header}</div>", unsafe_allow_html=True)
 
-                if not pending_battle and i == len(completed_battles) - 1:
-                    st.session_state.last_header_content = current_header
+                time.sleep(1.2)
+
+                # --- STEP 2: WINNER PHASE ---
+                # 1. Calculate next state
+                cur_map = {f: (win if o == loser else o) for f, o in cur_map.items()}
+                winner_fig = render_map(geojson, cur_map, st.session_state.teams, [att, dfn])
+                winner_header = format_battle_header(att, dfn, win, label=f'BATTLE {i+1}')
+
+                # 2. Update Map FIRST
+                map_placeholder.plotly_chart(winner_fig, use_container_width=True, key=f"replay_w_{i}", config={'displayModeBar': False})
+                # 3. Update Header IMMEDIATELY after
+                header_placeholder.markdown(f"<div class='header-container'>{winner_header}</div>", unsafe_allow_html=True)
+
+                if i == len(completed_battles) - 1:
+                    st.session_state.last_header_content = winner_header
 
                 time.sleep(1.0)
-                cur_map = {f: (win if o == loser else o) for f, o in cur_map.items()}
-
-                # Update map with new owner
-                map_placeholder.plotly_chart(render_map(geojson, cur_map, st.session_state.teams, [att, dfn]), use_container_width=True, key=f"replay_a_{i}")
-                time.sleep(0.8)
 
             st.session_state.county_assignments = cur_map
             st.session_state.is_replaying = False
