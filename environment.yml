@@ -3,10 +3,10 @@ channels:
   - conda-forge
   - defaults
 dependencies:
-  - geopy
-  - numpy
-  - pandas
-  - plotly
-  - python=3.13
-  - scipy
-  - streamlit
+  - geopy=2.4.1
+  - numpy=2.4.1
+  - pandas=2.3.3
+  - plotly=6.5.2
+  - python=3.13.11
+  - scipy=1.17.0
+  - streamlit=1.53.0
