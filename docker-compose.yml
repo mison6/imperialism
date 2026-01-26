@@ -1,0 +1,25 @@
+version: '3.8'
+
+services:
+  streamlit:
+    build: .
+    container_name: imperialism-streamlit
+    ports:
+      - "8501:8501"
+    volumes:
+      # Mount the app directory for live reloading
+      - .:/app
+      # Persist autosave data
+      - ./saved:/app/saved
+      - ./inputs:/app/inputs
+    environment:
+      - STREAMLIT_SERVER_ADDRESS=0.0.0.0
+      - STREAMLIT_SERVER_PORT=8501
+      - PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python
+    restart: unless-stopped
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://0.0.0.0:8501/_stcore/health" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
