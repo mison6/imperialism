@@ -11,7 +11,7 @@ from scipy.spatial import KDTree
 
 # --- 1. CRITICAL: PRE-FLIGHT DATA RECOVERY (Anti-Flicker Fix) ---
 # Check for existing game state BEFORE any UI logic runs to prevent the "No Game Found" flicker.
-AUTOSAVE_FILE = ".imperialism_autosave.json"
+AUTOSAVE_FILE = "saved/.imperialism_autosave.json"
 
 def load_autosave_silent():
     if os.path.exists(AUTOSAVE_FILE):
