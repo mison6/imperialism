@@ -2,6 +2,7 @@
 *
 
 # Then include only what we need
+!.streamlit/
 !environment.yml
 !streamlit_app.py
 !inputs/
@@ -24,4 +25,3 @@ __pycache__/
 venv/
 .venv/
 .conda/
-.imperialism_autosave.json
