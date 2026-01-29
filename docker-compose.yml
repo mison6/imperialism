@@ -4,6 +4,7 @@ services:
       context: .
       dockerfile: Dockerfile
     pull_policy: build
+    image: imperialism-streamlit:latest
     container_name: imperialism-streamlit
     ports:
       - "8501:8501"
