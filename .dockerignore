@@ -1,11 +1,27 @@
-# Git
-.git
+# Exclude everything first
+*
+
+# Then include only what we need
+!environment.yml
+!streamlit_app.py
+!inputs/
+!saved/
+!Dockerfile
+!docker-compose.yml
+
+# Always exclude these regardless
+.git/
 .gitignore
-
-# IDE
-.vscode
-.idea
-
-# OS
+.vscode/
+.idea/
 .DS_Store
 Thumbs.db
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.env/
+venv/
+.venv/
+.conda/
+.imperialism_autosave.json

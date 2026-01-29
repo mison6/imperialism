@@ -1,8 +1,9 @@
-version: '3.8'
-
 services:
   streamlit:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
+    pull_policy: build
     container_name: imperialism-streamlit
     ports:
       - "8501:8501"
@@ -18,7 +19,7 @@ services:
       - PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python
     restart: unless-stopped
     healthcheck:
-      test: [ "CMD", "curl", "-f", "http://0.0.0.0:8501/_stcore/health" ]
+      test: ["CMD", "curl", "-f", "http://0.0.0.0:8501/_stcore/health"]
       interval: 30s
       timeout: 10s
       retries: 3
